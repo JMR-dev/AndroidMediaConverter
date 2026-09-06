@@ -1,12 +1,18 @@
 package org.libremediaconverter.saf
 
 import android.app.UiAutomation
+import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.compose.ui.test.ComposeTimeoutException
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.media3.common.util.UnstableApi
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -20,14 +26,22 @@ import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.libremediaconverter.FailsOnEmulatorApi37
 import org.libremediaconverter.MainActivity
+import org.libremediaconverter.convert.ConversionDependencies
+import org.libremediaconverter.convert.OutputPublisher
 import org.libremediaconverter.ui.TestTags
+import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.regex.Pattern
 
 /**
  * Choosing a file, through the real system picker, and still having it after a rotation.
@@ -241,11 +255,71 @@ import java.util.concurrent.atomic.AtomicInteger
  * file".** That is what API 33 through 36 are for, and they answer it.
  */
 @UnstableApi
+/**
+ * Reads what SAF handed back, then publishes for real.
+ *
+ * The premise `OutputPublisher.destinationIsKnownEmpty` depends on has only ever been asserted
+ * against a fake built to match it — `OutputPublisherPublishTest` writes `ByteArray(0)` into
+ * `FakeSafProvider` before each case, under a comment stating this is how `CreateDocument` behaves.
+ * This records what stock DocumentsUI actually produced, at the moment `publish` sees it and before
+ * a byte is written, and then lets the real copy proceed. See #226.
+ */
+private class RecordingPublisher(private val app: Context) : OutputPublisher(app) {
+
+    override fun publish(staged: File, destination: Uri) {
+        seenDestination = destination
+        seenIsDocumentUri = DocumentsContract.isDocumentUri(app, destination)
+        seenSizeBefore = app.contentResolver
+            .query(destination, arrayOf(OpenableColumns.SIZE), null, null, null)
+            ?.use { row ->
+                val column = row.getColumnIndex(OpenableColumns.SIZE)
+                if (column >= 0 && row.moveToFirst() && !row.isNull(column)) row.getLong(column) else null
+            }
+        // Read before the copy: the ViewModel deletes the staged file once publish returns.
+        savedBytes = staged.readBytes()
+        super.publish(staged, destination)
+    }
+
+    companion object {
+        var savedBytes: ByteArray = ByteArray(0)
+        var seenDestination: Uri? = null
+        var seenIsDocumentUri: Boolean? = null
+        var seenSizeBefore: Long? = null
+
+        fun reset() {
+            savedBytes = ByteArray(0)
+            seenDestination = null
+            seenIsDocumentUri = null
+            seenSizeBefore = null
+        }
+    }
+}
+
 @RunWith(AndroidJUnit4::class)
 class SafPickerRoundTripTest {
 
+    /**
+     * Installs [RecordingPublisher] before the Activity exists.
+     *
+     * `ConversionViewModel` resolves its publisher through `ConversionDependencies` **at
+     * construction**, and the Compose rule launches `MainActivity` as part of the rule chain —
+     * which wraps `@Before`, so `@Before` is already too late. JUnit constructs the test instance
+     * before it evaluates the rules, so an initialiser is early enough, and it needs no
+     * `@BeforeClass` (this class's companion is private, and JUnit wants a public static there).
+     *
+     * Harmless for the other two tests: neither saves, so `publish` is never called and the
+     * subclass behaves exactly like `OutputPublisher`. `restoreOrientation` puts the seam back.
+     */
+    init {
+        RecordingPublisher.reset()
+        ConversionDependencies.publisher = { RecordingPublisher(it) }
+    }
+
     @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
+
+    private val context: Context =
+        InstrumentationRegistry.getInstrumentation().targetContext
 
     private val device: UiDevice =
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
@@ -291,6 +365,8 @@ class SafPickerRoundTripTest {
      */
     @After
     fun restoreOrientation() {
+        // The suite runs without Android Test Orchestrator, so a swapped seam outlives the class.
+        ConversionDependencies.reset()
         ActivityLifecycleMonitorRegistry.getInstance().removeLifecycleCallback(recreationWatcher)
         if (!rotated) return
         device.setOrientationNatural()
@@ -406,6 +482,163 @@ class SafPickerRoundTripTest {
      * are all warm and the only thing being waited on is one screen. That is what keeps the cost
      * of a genuinely absent root bounded — see the class KDoc.
      */
+    /**
+     * The save side of SAF, end to end, against a document stock DocumentsUI created (#226).
+     *
+     * ## What this settles
+     *
+     * `publish` deletes a destination it could not write to — `docs/defect-audit.md` **D4**'s fix,
+     * so a failed save does not leave a truncated file at the name the user chose — but only when
+     * that destination was **positively zero bytes** first. `destinationIsKnownEmpty` is careful
+     * that "I could not tell" never authorises a delete, which is right, and which makes the
+     * precondition load-bearing.
+     *
+     * Until now that precondition was asserted only against a fake built to match it:
+     * `OutputPublisherPublishTest` writes `ByteArray(0)` into `FakeSafProvider` before each case,
+     * under a comment stating this is how `CreateDocument` behaves. **If it is false in production,
+     * D4's fix is inert and every existing test still passes.** [RecordingPublisher] reads what SAF
+     * actually handed over, at the moment `publish` sees it and before a byte is written.
+     *
+     * ## Why it has to go through the app, and through the picker
+     *
+     * Through the **picker** because a `DocumentsProvider` cannot be reached any other way —
+     * measured three ways and recorded as **E7** in `docs/e2e-read-findings.md`: an unprotected one
+     * is refused at install, instrumentation carries the app's uid so the test APK's own identity
+     * is no help, and shell identity is denied too, each denial naming `ACTION_OPEN_DOCUMENT`.
+     *
+     * Through the **app** because the same constraint sinks the obvious alternative. A host
+     * Activity in this source set that owns a `CreateDocument` launcher cannot be started:
+     * `ActivityScenario` refuses with *"Intent in process org.libremediaconverter resolved to
+     * different process org.libremediaconverter.test"*. Instrumentation runs in the target app's
+     * process, so the only Activity available to drive is the app's own — which is also the more
+     * faithful thing to drive.
+     *
+     * ## The conversion is setup, not subject
+     *
+     * Save is only offered on `Converted`, so the test converts first. MP3 is chosen because the
+     * router sends it to FFmpeg unconditionally at every API level, so the setup cannot depend on
+     * the device's codecs — #223 is what that costs.
+     */
+    @Test
+    @FailsOnEmulatorApi37
+    fun aSaveWritesToTheDocumentTheSystemPickerCreated() {
+        pickTheFixture()
+        convertToTheDefaultFormat()
+
+        saveThroughTheSystemPicker()
+
+        val destination = RecordingPublisher.seenDestination
+        assertNotNull("publish was never reached, so nothing was saved", destination)
+        assertTrue(
+            "SAF handed back something that is not a document URI, so publish's cleanup can " +
+                "never run and D4's fix is inert: $destination",
+            RecordingPublisher.seenIsDocumentUri == true,
+        )
+        assertEquals(
+            "SAF handed back a document that is not positively empty, so " +
+                "destinationIsKnownEmpty answers false and a failed save keeps its partial file",
+            0L,
+            RecordingPublisher.seenSizeBefore,
+        )
+
+        // And the bytes really arrived, which only the failure side was covered for on a device.
+        val staged = File(context.cacheDir, "conversions")
+        assertArrayEquals(
+            "the destination did not receive what was staged",
+            RecordingPublisher.savedBytes,
+            context.contentResolver.openInputStream(destination!!)!!.use { it.readBytes() },
+        )
+        assertTrue("staging should be empty after a successful save", staged.listFiles().isNullOrEmpty())
+    }
+
+    /**
+     * Runs the conversion, leaving the screen on `Converted`.
+     *
+     * **The format is left at its default, and that is a constraint rather than laziness.**
+     * `ConverterScreen` registers `CreateDocument` with the *output's* MIME type, and
+     * [FixtureDocumentsProvider] advertises `Root.COLUMN_MIME_TYPES` of `video/mp4` — deliberately,
+     * so the picker's MIME filter has a mutation with a shape. DocumentsUI honours that on the save
+     * side too: choosing MP3 makes the destination type `audio/mpeg`, and the fixture root is then
+     * filtered out of the save dialog entirely. Measured, as *"the create-document dialog never
+     * showed LMC R38 fixtures"*. The default `MP4_H265` produces `video/mp4` and the root is
+     * offered.
+     *
+     * **The notification dialog is dismissed rather than pre-granted, and that is the honest
+     * version.** Convert never calls `convert()` directly — it launches `RequestPermission` for
+     * `POST_NOTIFICATIONS` and converts from the callback **whichever way the answer goes**. So the
+     * dialog only has to be got out of the way; denying it is a real user's path and the conversion
+     * still runs. Granting it programmatically was tried first and did not take —
+     * `GrantPermissionsActivity` appeared anyway, the click that followed went to it rather than to
+     * the app, and the screen sat in `Ready` with nothing enqueued.
+     *
+     * **Both taps scroll first.** On `Ready` the screen carries a file card, five pickers and then
+     * the button, so Convert is below the fold on a phone. `performClick` on an off-screen node
+     * dispatches at a position that hits nothing and throws nothing, and `assertIsEnabled` passes
+     * either way — the first version of this sat waiting for a `Converted` that could never come.
+     */
+    private fun convertToTheDefaultFormat() {
+        composeRule.onNodeWithTag(TestTags.Converter.CONVERT)
+            .performScrollTo()
+            .assertIsEnabled()
+            .performClick()
+
+        dismissThePermissionDialog()
+        awaitNode(TestTags.SAVE_FILE, CONVERSION_TIMEOUT_MS)
+    }
+
+    /**
+     * Gets the `POST_NOTIFICATIONS` dialog out of the way, if this device shows one.
+     *
+     * Backing out of it is a denial, and a denial is fine here: the conversion starts either way,
+     * and what that costs the user is a progress notification confined to the Task Manager. Waiting
+     * only briefly, because on a device where the permission is already held no dialog appears at
+     * all and the conversion is already under way.
+     */
+    private fun dismissThePermissionDialog() {
+        if (device.wait(Until.hasObject(By.pkg(PERMISSION_UI_PACKAGE)), PERMISSION_DIALOG_MS) == true) {
+            device.pressBack()
+            device.wait(Until.gone(By.pkg(PERMISSION_UI_PACKAGE)), PERMISSION_DIALOG_MS)
+        }
+    }
+
+    /**
+     * Taps Save and drives the create-document dialog into the fixture root.
+     *
+     * Retried whole, for the reason [pickTheFixture] documents: a dialog that came up unreadable
+     * cannot be recovered from inside, and a fresh one is the only answer.
+     */
+    private fun saveThroughTheSystemPicker() {
+        var missing: BySelector? = null
+        repeat(PICK_ATTEMPTS) { attempt ->
+            requireAReadableScreen()
+            composeRule.onNodeWithTag(TestTags.SAVE_FILE).performClick()
+            missing = walkTheSaveDialog(
+                if (attempt == 0) PICKER_TIMEOUT_MS else REOPENED_TIMEOUT_MS,
+            )
+            if (missing == null) {
+                awaitNode(TestTags.Converter.CONVERT_ANOTHER, SAVE_TIMEOUT_MS)
+                return
+            }
+            dismissThePicker()
+        }
+        throw AssertionError(
+            "the create-document dialog never showed $missing, in $PICK_ATTEMPTS separate " +
+                "dialogs (the last one left ${device.currentPackageName} in front)",
+        )
+    }
+
+    /** Into the fixture root, then Save. Returns the selector never found, or null. */
+    private fun walkTheSaveDialog(timeoutMs: Long): BySelector? {
+        val picker = By.pkg(DOCUMENTS_UI_PACKAGE)
+        val root = By.text(FixtureDocumentsProvider.ROOT_TITLE)
+        return when {
+            device.wait(Until.hasObject(picker), timeoutMs) != true -> picker
+            !tapPickerNode(root, timeoutMs, ifAbsent = ::openTheRootsDrawer) -> root
+            !tapPickerNode(SAVE_BUTTON, timeoutMs) -> SAVE_BUTTON
+            else -> null
+        }
+    }
+
     private fun pickTheFixture() {
         var missing: BySelector? = null
         repeat(PICK_ATTEMPTS) { attempt ->
@@ -795,8 +1028,8 @@ class SafPickerRoundTripTest {
         }
     }
 
-    private fun awaitNode(tag: String) {
-        composeRule.waitUntil("a node tagged $tag exists", APP_TIMEOUT_MS) {
+    private fun awaitNode(tag: String, timeoutMs: Long = APP_TIMEOUT_MS) {
+        composeRule.waitUntil("a node tagged $tag exists", timeoutMs) {
             composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
         }
     }
@@ -810,6 +1043,24 @@ class SafPickerRoundTripTest {
          */
         const val PICKER_TIMEOUT_MS = 30_000L
         const val APP_TIMEOUT_MS = 30_000L
+
+        /** The runtime-permission dialog's package, so it can be recognised and dismissed. */
+        const val PERMISSION_UI_PACKAGE = "com.google.android.permissioncontroller"
+
+        /** Short: either the dialog is up almost immediately, or the permission was already held. */
+        const val PERMISSION_DIALOG_MS = 5_000L
+
+        /** A 3 s clip to MP3 on an emulator is about a second; this only bounds a hang. */
+        const val CONVERSION_TIMEOUT_MS = 120_000L
+
+        /** The copy is a few kilobytes, but it crosses a provider. */
+        const val SAVE_TIMEOUT_MS = 30_000L
+
+        /**
+         * DocumentsUI's save button. Case-insensitive because the label is "SAVE" on some images
+         * and "Save" on others, and the difference is not what this test is about.
+         */
+        val SAVE_BUTTON: BySelector = By.text(Pattern.compile("save", Pattern.CASE_INSENSITIVE))
 
         /**
          * The same wait once a picker has already come and gone, and shorter for a reason.

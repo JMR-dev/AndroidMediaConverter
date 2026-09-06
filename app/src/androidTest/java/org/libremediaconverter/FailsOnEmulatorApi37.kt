@@ -78,4 +78,4 @@ annotation class FailsOnEmulatorApi37
  * `INSTRUMENTATION_ABORTED`, so the count is a number taken from a partial run. The report
  * records the truncation next to the counts for that reason.
  */
-const val FAILS_ON_EMULATOR_API37_BASELINE = 5
+const val FAILS_ON_EMULATOR_API37_BASELINE = 6
