@@ -76,12 +76,18 @@ days. Read it as the current answer, and see the git history if you need the old
   `angle_indirect` and `swangle_indirect` all boot, while `auto`, `off`, `guest` and
   `swiftshader_indirect` do not. `docs/local-emulator.md` has the evidence and the per-API renderer
   table.
-- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Five** of the 68 instrumented
+- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Five** of the 69 instrumented
   tests cannot be *run* on that image, for three unrelated reasons: three Media3 tests fail inside
   the emulator's own `c2.goldfish.h264.decoder`, one SAF test takes the framework down when it
   rotates the display, and its sibling — the SAF picker round trip — aborts `system_server` from
   the task-snapshot path whether it passes or not. All five carry `@FailsOnEmulatorApi37` and run
-  in a separate `continue-on-error` job; the gating leg runs the other 63.
+  in a separate `continue-on-error` job; the gating leg runs the other 64.
+
+  **These two numbers move with the suite and are derived, not remembered.** `grep -cE
+  '^\s*@Test' ` over `app/src/androidTest` is the first; the second is that minus the marker
+  count `.github/scripts/e2e-report-shape.sh` greps. Cross-check against any run's shape rather
+  than trusting the sentence: a leg below 37 reports the first as `expected`, and the API 37
+  gating leg reports the second.
 
   **That third reason is why "cannot pass" became "cannot be run" on 2026-09-05.** Four gating
   runs were read logcat-first — 34006456986, 34001744574, 34001377499 and the green 34002313300 —
