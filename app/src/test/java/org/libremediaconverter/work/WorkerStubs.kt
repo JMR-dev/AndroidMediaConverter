@@ -1,11 +1,14 @@
 package org.libremediaconverter.work
 
 import android.content.Context
+import androidx.work.ForegroundInfo
+import androidx.work.testing.TestForegroundUpdater
 import com.google.common.util.concurrent.ListenableFuture
 import org.libremediaconverter.convert.OutputPublisher
 import org.libremediaconverter.convert.SoftwareTranscoder
 import org.libremediaconverter.model.ConversionRequest
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
@@ -93,4 +96,28 @@ internal class FailedFuture(private val failure: Throwable) : ListenableFuture<V
     override fun isDone(): Boolean = true
     override fun get(): Void = throw ExecutionException(failure)
     override fun get(timeout: Long, unit: TimeUnit): Void = throw ExecutionException(failure)
+}
+
+/**
+ * Records every [ForegroundInfo] the worker publishes, and otherwise behaves as the test default.
+ *
+ * Delegating to [TestForegroundUpdater] rather than hand-rolling a `ListenableFuture<Void>`: the
+ * worker awaits what this returns, so a future that never completes would hang the initial
+ * `setForeground` rather than test anything.
+ *
+ * Shared scaffolding since #252 moved it here out of `ProgressNotificationTest`, which asks what a
+ * *running* worker publishes; `ForegroundNotificationTest` asks what its *first* post is, and both
+ * questions need the same recorder. `infos.first()` is that first post in either.
+ */
+internal class RecordingForegroundUpdater : TestForegroundUpdater() {
+    val infos = mutableListOf<ForegroundInfo>()
+
+    override fun setForegroundAsync(
+        context: Context,
+        id: UUID,
+        foregroundInfo: ForegroundInfo,
+    ): ListenableFuture<Void> {
+        infos += foregroundInfo
+        return super.setForegroundAsync(context, id, foregroundInfo)
+    }
 }

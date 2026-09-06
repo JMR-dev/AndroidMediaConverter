@@ -8,6 +8,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ForegroundInfo
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkerParameters
 import androidx.work.hasKeyWithValueOfType
 import androidx.work.workDataOf
@@ -40,8 +41,28 @@ import java.io.File
  * observe. That durability is what makes the six-hour foreground-service timeout
  * recoverable instead of fatal.
  *
- * Expedited work is deliberately *not* used. It maps to JobScheduler expedited jobs
- * with a short quota, which is the wrong shape for a multi-minute transcode.
+ * Enqueued as **expedited** work, with `RUN_AS_NON_EXPEDITED_WORK_REQUEST`. This paragraph said
+ * the opposite until 2026-09-06 — "deliberately *not* used… the wrong shape for a multi-minute
+ * transcode" — and the quota it named does not reach a transcode the way it reads:
+ *
+ *  - The quota belongs to the *JobScheduler* job, and `SystemJobInfoConverter:135` in
+ *    work-runtime 2.11.2 sets `JobInfo.setExpedited(true)` only when `!isRetry && !isDelayed`.
+ *    A retry is therefore scheduled exactly as every job is scheduled today.
+ *  - A job the system stops mid-run does not get its answer from [FailureOutcome].
+ *    `WorkerWrapper.interrupt` cancels the worker's coroutine with a `WorkerStoppedException`,
+ *    which its `launch` resolves as `ResetWorkerStatus` — the worker's own `Result` is discarded
+ *    and the work re-enqueued with backoff, whatever it returned. So a quota stop is a retry, and
+ *    the `CancellationException` arm in [doWork] is what deletes the partial on the way through.
+ *
+ * What it buys is narrower than "conversions start sooner", and the narrowness is the honest part:
+ * `GreedyScheduler` starts unconstrained, undelayed work in-process the moment it is enqueued and
+ * carries no `expedited` branch at all, so a conversion begun from the open app runs exactly when
+ * it ran before — the common case does not move. The flag is for the job that has to go *through*
+ * JobScheduler because no process is left to start it: one still enqueued when the app died.
+ * `SystemJobScheduler.schedule` re-converts the spec every time it schedules, so such a job is
+ * expedited on the way back in, and a retried one is not. `RUN_AS_NON_EXPEDITED_WORK_REQUEST`
+ * rather than `DROP_WORK_REQUEST`: an invisible quota is no reason to throw a user's conversion
+ * away, and `SystemJobScheduler:198` degrades it to an ordinary job instead.
  *
  * That durability is not free, and the queue surviving is not the same as the job surviving.
  * When WorkManager recovers a job after process death the app is by definition in the background,
@@ -60,7 +81,7 @@ class ConversionWorker(context: Context, params: WorkerParameters) : CoroutineWo
     override suspend fun doWork(): Result {
         val inputUri = inputData.getString(KEY_INPUT_URI)?.let(Uri::parse)
             ?: return Result.failure(workDataOf(KEY_ERROR to "No input file."))
-        val displayName = inputData.getString(KEY_DISPLAY_NAME) ?: "input"
+        val displayName = displayName()
         // Absent, not zero, when nobody could say -- see InputQuery. `getLong(key, 0L)` is what
         // made those two the same number, and `hasSpaceFor(0)` is only "is there 128 MB free".
         val declaredSize = inputData
@@ -100,7 +121,10 @@ class ConversionWorker(context: Context, params: WorkerParameters) : CoroutineWo
             // process death is. With it above the try that throw escaped doWork() entirely: no
             // retry, no error in the output Data, and no staged.delete(). MediaProbe.probe below
             // was outside for the same reason and had the same problem.
-            setForeground(foregroundInfo(displayName, percent = 0, indeterminate = true))
+            //
+            // Posted through getForegroundInfo() rather than built here a second time -- see that
+            // override for what the duplicate cost.
+            setForeground(getForegroundInfo())
 
             // Through the seam rather than MediaProbe directly. The seam already existed for the
             // ViewModel and the worker was the last caller bypassing it, which is why nothing on
@@ -339,8 +363,32 @@ class ConversionWorker(context: Context, params: WorkerParameters) : CoroutineWo
         return OutputSpec(container, video, audio)
     }
 
+    /**
+     * What this job's input is called, or [InputQuery.FALLBACK_DISPLAY_NAME] when nothing named it.
+     *
+     * One read rather than the two copies of `?: "input"` that [doWork] and [getForegroundInfo]
+     * each carried, and against `InputQuery`'s constant rather than a third literal of the same
+     * string: it is the same fallback the picker uses, and it reaches the save dialog as
+     * `input_converted.mp4`.
+     */
+    private fun displayName(): String = inputData.getString(KEY_DISPLAY_NAME) ?: InputQuery.FALLBACK_DISPLAY_NAME
+
+    /**
+     * The notification a starting conversion posts, and now the only definition of it.
+     *
+     * This is WorkManager's hook for expedited work, and **it will not be called on any device
+     * this app supports.** `WorkForeground.kt:38` in work-runtime 2.11.2 opens with
+     * `if (!spec.expedited || Build.VERSION.SDK_INT >= 31) return`, that function is the library's
+     * only caller of `getForegroundInfoAsync()`, and `minSdk` is 33. So #252's premise — that
+     * enqueueing expedited work would make these lines live — is false, and `setExpedited` alone
+     * would have left them exactly as cold as the first instrumented coverage read found them.
+     *
+     * What makes them live is [doWork] posting *this* instead of building its own copy. The two
+     * were identical — same title, `percent = 0`, `indeterminate = true` — so one was a duplicate
+     * that could drift, and the one nothing executed is the one that would have drifted silently.
+     */
     override suspend fun getForegroundInfo(): ForegroundInfo = foregroundInfo(
-        inputData.getString(KEY_DISPLAY_NAME) ?: "input",
+        displayName(),
         percent = 0,
         indeterminate = true,
     )
@@ -416,6 +464,12 @@ class ConversionWorker(context: Context, params: WorkerParameters) : CoroutineWo
             quality: QualityTier = QualityTier.FAST,
             enginePreference: EnginePreference = EnginePreference.AUTO,
         ) = OneTimeWorkRequestBuilder<ConversionWorker>()
+            // Expedited, so the jobs that do go through JobScheduler are treated as the
+            // user-initiated work they are -- see the class KDoc for what that is and is not worth.
+            // Safe to set here and only because of what this builder does not do: `build()` refuses
+            // an expedited request carrying an initial delay or any constraint but network and
+            // storage, and none of the three is set below.
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .addTag(JobTags.displayName(displayName))
             // Neither the tag nor the Data entry is written for a size nobody knows. A `Data` has
             // no null, so the absence of the key *is* the unknown — and a tag reading
