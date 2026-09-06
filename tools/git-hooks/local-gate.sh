@@ -105,6 +105,72 @@ done <<< "$changed_files"
 
 # --- the cheap gate always runs -----------------------------------------------------------
 
+# --- shellcheck, at CI's exact pin ---------------------------------------------------------
+# WHY THIS IS HERE. The gate ran ktlint, detekt and Android lint but not shellcheck, so a new or
+# edited `.sh` file was precisely the case where this hook passed and CI's Static analysis leg
+# still went red. That is not hypothetical: this script is itself a new `.sh` file, and the first
+# thing it could not check was itself. It was caught by hand twice before it was caught here.
+#
+# THE DIGEST IS READ OUT OF status_check.yml, NOT COPIED INTO THIS FILE. shellcheck 0.9.0 and
+# 0.11.0 disagree about how to report a trap handler -- SC2317 on seven body lines versus SC2329
+# once on the declaration, same script, same directive, one red and one green. That disagreement
+# is why CI pins by digest, and a second copy of the digest here would drift from it silently.
+# When it drifts, the symptom is this gate passing and CI failing: the exact thing this section
+# exists to prevent. So there is one digest in the repo and this reads it.
+#
+# ALL TRACKED FILES, not just changed ones, because that is what CI does -- `git ls-files '*.sh'`.
+# The point is to predict that leg, not to audit the diff.
+shellcheck_pin="$(grep -oE 'koalaman/shellcheck@sha256:[0-9a-f]{64}' \
+  .github/workflows/status_check.yml | head -1)"
+# :z is podman's SELinux relabel and is what this host needs; docker on CI does without it.
+runtime=""
+mount=":z"
+for candidate in podman docker; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    runtime="$candidate"
+    [ "$candidate" = "docker" ] && mount=""
+    break
+  fi
+done
+
+if [ -z "$shellcheck_pin" ]; then
+  say "NOT COVERED: shellcheck. Could not read the pinned digest out of
+  .github/workflows/status_check.yml -- if that pin moved or was reformatted, fix this grep
+  rather than leaving the check silently absent."
+elif [ -z "$runtime" ]; then
+  say "NOT COVERED: shellcheck. Neither podman nor docker is on PATH, and there is no shellcheck
+  system package on this host. CI's Static analysis leg is what answers for .sh files then."
+else
+  say "shellcheck ($runtime, $shellcheck_pin)"
+  if ! git ls-files -z '*.sh' |
+    xargs -0 -r "$runtime" run --rm -v "$PWD:/mnt$mount" "docker.io/$shellcheck_pin"; then
+    die "shellcheck failed. CI runs the same digest over the same files, so this is a red
+  Static analysis leg waiting to happen."
+  fi
+fi
+
+# --- actionlint, the half shellcheck cannot see ---------------------------------------------
+# A good deal of this repo's bash lives in workflow `run:` blocks, which `git ls-files '*.sh'`
+# does not match at all -- so without this a workflow edit is the same hole the section above
+# just closed: green here, red on Static analysis. Pinned by digest for the reason in that
+# section, and for actionlint's own: its documented install is `curl | bash` off a moving branch,
+# which does not belong in a repo that pins every action by SHA.
+actionlint_pin="$(grep -oE 'rhysd/actionlint@sha256:[0-9a-f]{64}' \
+  .github/workflows/status_check.yml | head -1)"
+
+if [ -z "$actionlint_pin" ]; then
+  say "NOT COVERED: actionlint. Could not read the pinned digest out of
+  .github/workflows/status_check.yml -- fix this grep rather than leaving the check absent."
+elif [ -z "$runtime" ]; then
+  say "NOT COVERED: actionlint. Neither podman nor docker is on PATH; CI's Static analysis leg
+  is what answers for the workflows then."
+else
+  say "actionlint ($runtime, $actionlint_pin)"
+  if ! "$runtime" run --rm -v "$PWD:/repo$mount" -w /repo "docker.io/$actionlint_pin" -color; then
+    die "actionlint failed. CI runs the same digest over the same workflows."
+  fi
+fi
+
 say "$MODE: running the JVM gate"
 if ! ./gradlew "${GRADLE_GATE[@]}" --continue; then
   die "the JVM gate failed (assemble, unit tests, androidTest compile, ktlint, detekt, lint)."
