@@ -254,31 +254,31 @@ jobs:
             api-level: "36"
           # API 37, and it is NOT the same device as the four rows above it.
           #
-          # CAVEAT, read this before trusting a green here: this leg runs with
-          # SystemUI disabled and the framework restarted under it. No other leg
-          # and no Pixel run uses that configuration. It is defensible only because
-          # nothing THIS LEG RUNS touches system UI -- Media3, FFmpeg and
-          # WorkManager tests -- and because the alternative is no CI coverage of
-          # the level this app targets. **Anything that ever does depend on system
-          # UI must not trust this row.** E2E_DISABLE_SYSTEM_UI is what does it;
-          # .github/scripts/e2e-run.sh explains the mechanism and why every step of
-          # it is verified rather than assumed.
+          # THE CAVEAT THAT USED TO BE HERE IS WITHDRAWN, 2026-09-05, and the
+          # withdrawal is good news. It said this leg "runs with SystemUI disabled
+          # and the framework restarted under it", that no other leg or Pixel run
+          # uses that configuration, and that anything depending on system UI must
+          # not trust this row. **None of that was ever true.** Measured: the
+          # framework restart is two root-only adb commands that answered `Must be
+          # root` on every leg ever run, and `pm disable-user` does not stop SystemUI
+          # starting on this image anyway -- in run 34006456986 the package is
+          # verified disabled at 02:29:33 and SystemUI (pid 4275) is up from 02:28:52
+          # for the whole run. So this row's device configuration is the same as the
+          # other four's, and a green here means what a green on 33-36 means.
           #
-          # "this leg" and not "this suite", since 2026-08-24, and the difference is
-          # now load-bearing: SafPickerRoundTripTest DOES touch system UI. It drives
-          # DocumentsUI and rotates the display, and both reach the gralloc mapper
-          # this image aborts in -- disabling SystemUI removes the IDLE trigger, not
-          # those. Measured per method on android-37.0: the ROTATION test takes the
-          # framework down (INSTRUMENTATION_ABORTED) and carries
-          # @FailsOnEmulatorApi37, so notAnnotation below keeps it off this row; the
-          # PICKER test passes and runs here like anything else. A rotation rebuilds
-          # every surface at once, and starting another app's activity does not.
+          # E2E_DISABLE_SYSTEM_UI still exists and still runs, because what it
+          # actually buys is a 45-second window with no new gralloc aborts before the
+          # suite starts -- the boot-time ones land close together and instrumentation
+          # has to begin after them, not between them. The name is stale and kept:
+          # read .github/scripts/e2e-run.sh's header, which carries the measurements.
           #
-          # So this row does now run one test that depends on system UI, and the
-          # caveat above still applies to it: a green here is not evidence the picker
-          # works on a device with SystemUI running -- the Pixel release check is.
-          # docs/api-37-emulator-crash.md has the per-method measurements, and the
-          # correction that produced them.
+          # notAnnotation below keeps five tests off this row, and one of
+          # them is new. SafPickerRoundTripTest's PICKER test was measured on
+          # 2026-08-24 as passing here and was left on the leg; four gating logcats
+          # read on 2026-09-05 show it aborting system_server from the task-snapshot
+          # path on every single run, pass or fail, which is what had been failing
+          # unrelated PRs (#108). Both of that class's tests now carry the marker.
+          # docs/api-37-emulator-crash.md has the timings and the correction.
           #
           # api-level must be a POINT release. A bare 37 is not an SDK package and
           # fails during setup, which cost a run to discover. `37.0` is the choice

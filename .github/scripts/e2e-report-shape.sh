@@ -252,8 +252,22 @@ if [ -n "$baseline" ]; then
     if [ "$expected" != "unknown" ] && [ "$expected" != "$baseline" ]; then
       deviations+=("the runner started $expected tests, the baseline is $baseline")
     fi
+    # `expected` is compared on every run and `failed` only on a run that finished, and the
+    # difference is the truncation this file already records rather than compares. `expected`
+    # comes from `Starting N tests`, which is printed before anything can abort, so it answers
+    # "is the marked set the size the baseline says" whatever happens afterwards. `failed` is a
+    # tally of what actually ran: on a truncated run the tests after the abort never start, so
+    # comparing it to the baseline announces a deviation about the framework dying rather than
+    # about the test list. Measured on 2026-09-05, two api37-debug dispatches of the same four
+    # marked tests: 4/4/4 and then 4/3/3, the second having lost the last test to the abort.
+    # Announcing that as "one now passes" is exactly the wrong reading, and #120 is the standing
+    # lesson about a notice that is wrong often enough to be skimmed past.
     if [ "$failed" != "unknown" ] && [ "$failed" != "$baseline" ]; then
-      deviations+=("$failed tests failed, the baseline is $baseline — every test carrying the marker is expected to fail on this image, so fewer means one now passes and more means a new one joined")
+      if [ "$completed" = "**no**" ]; then
+        echo "::debug::$failed of $baseline marked tests failed, on a run the abort truncated — not compared"
+      else
+        deviations+=("$failed tests failed, the baseline is $baseline — every test carrying the marker is expected to fail on this image, so fewer means one now passes and more means a new one joined")
+      fi
     fi
   fi
   if [ -n "$marked" ] && [ "$marked" != "$baseline" ]; then

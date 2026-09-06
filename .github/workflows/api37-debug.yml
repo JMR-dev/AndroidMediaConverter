@@ -28,6 +28,15 @@ name: API 37 debug
 #   - It does not fork .github/scripts/e2e-run.sh. That script owns the FAILED-vs-WEDGED
 #     split, the SIGQUIT thread dump and the streamed logcat, and it is the copy CI
 #     exercises every day. This calls it, exactly as status_check.yml does.
+#
+#     The SystemUI disable below is the exception, and it is a real one: this workflow
+#     drives it from its own probe step so `disable_system_ui` can be turned off for a
+#     dispatch, where the real leg gets it through `E2E_DISABLE_SYSTEM_UI`. Two copies of
+#     that logic therefore exist and must be changed together. **This instrument is also
+#     what established that the disable half of it does nothing** -- run 34010167885, in
+#     which making its framework restart real cost the leg every test it had. Read
+#     .github/scripts/e2e-run.sh's header for the measurements; the restart is gone from
+#     both copies and what remains is the 45-second quiet window.
 #   - It does not change status_check.yml. If a configuration here turns out to work,
 #     the change to the real matrix is proposed separately.
 #
@@ -291,45 +300,30 @@ jobs:
                 sleep 5
               done
 
-              # pm disable-user does not retract SystemUI's existing region-sampling
-              # registration -- by the time boot completes it has already registered. Only a
-              # framework restart brings back a SystemUI-less SurfaceFlinger. See
-              # disable_region_sampling in tools/local-emulator/run-e2e.sh.
-              echo "  restarting the framework"
-              adb shell stop
-              for i in $(seq 1 20); do
-                [ -z "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ] && break
-                sleep 2
-              done
-              echo "  system_server down after $((i * 2)) s"
-              adb shell start
-              for i in $(seq 1 30); do
-                if adb shell service check package 2> /dev/null | grep -q ': found' \
-                  && adb shell service check activity 2> /dev/null | grep -q ': found' \
-                  && [ -n "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ]; then
-                  echo "  services back after $((i * 5)) s"
-                  break
-                fi
-                sleep 5
-              done
-
+              # NO FRAMEWORK RESTART. There was one here, and making it work (it needed
+              # `adb root`) is what proved the whole disable is ineffective on this image:
+              # SystemUI starts anyway, measured on CI and locally, and the restart itself
+              # loses the package state to PackageManager's delayed write and leaves the leg
+              # reporting `Starting 0 tests`. e2e-run.sh's header carries the measurements.
+              # What is left, and what is load-bearing, is the quiet window below.
               if systemui_disabled; then
-                echo "  verified: com.android.systemui is in pm list packages -d"
+                echo "  pm list packages -d: com.android.systemui is in it"
               else
-                echo "  NOT DISABLED after the restart -- the package state did not survive"
-                round=$((round + 1))
-                continue
+                echo "  pm list packages -d: com.android.systemui is NOT in it"
               fi
+              # Beside it, because the two disagree on this image and the first line alone
+              # reads as a claim about the process that is not true.
+              echo "  com.android.systemui pid: $(adb shell pidof com.android.systemui 2> /dev/null | tr -d '\r\n')"
 
               before="$(count_aborts)"
               sleep 45
               after="$(count_aborts)"
-              echo "--- abort rate, SystemUI disabled: $((after - before)) new in 45 s (total ${after:-0}) ---"
+              echo "--- aborts: $((after - before)) new in 45 s (total ${after:-0}) ---"
               [ "$((after - before))" -eq 0 ] && break
               echo "  still aborting after round $round"
               round=$((round + 1))
             done
-            systemui_disabled && echo "final state: SystemUI disabled" || echo "final state: SystemUI STILL ENABLED -- expect Starting 0 tests"
+            systemui_disabled && echo "final state: com.android.systemui is disabled in pm (it still runs)" || echo "final state: com.android.systemui is not even disabled in pm"
           fi
 
           echo "--- crash buffer (tail 60) ---"

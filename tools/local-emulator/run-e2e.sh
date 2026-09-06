@@ -355,12 +355,10 @@ boot_emulator() {
 # may be in one of its restarts and `pm` is simply not published yet. The first attempt at this
 # failed exactly that way, with `cmd: Can't find service: package`.
 #
-# The framework restart at the end is not optional, and finding that out cost a run. By the
-# time `sys.boot_completed` flips, SystemUI has already registered its region-sampling listener,
-# and `pm disable-user` does not retract a registration that already happened -- it only stops
-# the package being started again. So the first attempt disabled SystemUI, reported success, and
-# then died exactly as before with `Starting 0 tests` and four more aborts. `stop; start` cycles
-# zygote deliberately, and the framework that comes back up does not start SystemUI at all.
+# This used to end with a framework restart, described here as "not optional". It was neither
+# optional nor happening -- see the block inside the function. What the first attempt's
+# `Starting 0 tests` and four more aborts actually showed is that a `pm disable-user` on its own
+# buys nothing, which is still true; what was wrong is the conclusion that a restart would.
 disable_region_sampling() {
   local api="$1" out i before after ready
   case "$api" in 37 | 37.*) ;; *) return 0 ;; esac
@@ -383,14 +381,18 @@ disable_region_sampling() {
     return 0
   fi
 
-  echo "  restarting the framework so the region-sampling listener goes with it"
-  emu_adb shell stop > /dev/null 2>&1
-  emu_adb shell start > /dev/null 2>&1
-  # There is no property worth waiting on here, and an earlier version of this only looked
-  # like it was waiting on one: `stop` does not clear sys.boot_completed, so it still reads
-  # `1` throughout the restart and any loop over it returns at once. The loop below is the
-  # wait -- and it polls the better thing anyway, since `Can't find service: package` is the
-  # failure it exists to prevent.
+  # NO FRAMEWORK RESTART, and the two lines that used to be here are why this comment is long.
+  # They were `emu_adb shell stop` and `emu_adb shell start`, both redirected to /dev/null, and
+  # both root-only -- so what they printed there was `Must be root` and what they did was nothing,
+  # here and in the two CI copies alike. Making them real (2026-09-05) is what established that
+  # the disable never worked in the first place: with the package verified `disabled-user` before
+  # AND after a clean restart on android-37.0, `com.android.systemui` comes up 3 s after
+  # `system_server` regardless, and the same is visible in CI's own logcat. The restart also loses
+  # the package state to PackageManager's delayed write if it lands too soon after the `pm` call,
+  # which cost api37-debug run 34010167885 every test in the leg.
+  #
+  # So the useful part of this function is the quiet window below, not the disable. See
+  # .github/scripts/e2e-run.sh's header, and docs/api-37-emulator-crash.md.
   ready=0
   for i in $(seq 1 30); do
     if emu_adb shell service check package 2> /dev/null | grep -q ': found' \

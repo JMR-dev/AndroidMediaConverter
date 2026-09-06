@@ -315,25 +315,90 @@ clean zero. Its own post-disable check on the run recorded below printed
 
 So what is reliably achieved is a **rate collapse** — from roughly one abort every fourteen
 seconds to one every forty-five — which a 47-second Gradle run survives and a five-minute one
-might not. The 180-second zero above is one measurement on a device that had been up for twelve
-minutes and had already cycled its framework several times. The harness prints the quiet-check
-delta on every run precisely so this is visible rather than assumed.
+might not.
 
-One ordering detail cost a whole run and is now encoded in `disable_region_sampling`: by the time
-`sys.boot_completed` flips, SystemUI has **already registered**, and `pm disable-user` does not
-retract an existing registration — it only stops the package being started again. Disabling it
-and proceeding straight to the tests fails exactly as before. The harness therefore does
-`stop; start` afterwards, so the framework that comes back never starts SystemUI at all.
+**And that restart has never happened — which is how the disable turned out not to work either.**
+Corrected 2026-09-05; this replaces the two paragraphs above rather than qualifying them.
+
+`adb shell stop` and `start` are root-only, adbd is not root on a booted emulator, and all three
+copies of this logic called them without `adb root`. On CI both printed `Must be root`, between
+lines that read as if the restart had happened; `run-e2e.sh` sent them to `/dev/null`, so its
+`Must be root` was never even visible. Neither number in those logs was an observation either —
+the `pidof` loop breaks when the process is gone and otherwise falls out at its last iteration,
+and the old code printed the iteration count either way, so `system_server down after ~40 s` is
+what a stop that did nothing looks like.
+
+Adding `adb root` made the restart real, and **that is what proved the disable ineffective**.
+`api37-debug` run 34010167885, `disable_system_ui=true`:
+
+```
+--- disable round 1 ---
+  pm attempt 1: Package com.android.systemui new state: disabled-user
+  restarting the framework
+  adbd is running as root
+  system_server down after 2 s
+  services back after 10 s
+  NOT DISABLED after the restart -- the package state did not survive
+```
+
+Three rounds of that, then `final state: SystemUI STILL ENABLED`, and the leg reported
+`expected: 0, received: 0` — `Starting 0 tests`, the exact failure this function exists to
+prevent.
+
+Bisected locally on `android-37.0`, which explains the lost state and nothing else:
+
+| arm | sequence | disabled after the restart? |
+|---|---|---|
+| A | `pm disable-user`, then `stop` at once | **no** |
+| B | `pm disable-user`, wait 15 s, then `stop` | **yes** |
+
+That is PackageManager's delayed write of package restrictions: the stop kills `system_server`
+before the settings are flushed, and arm A is what CI did. **Arm B does not help either**, which
+is the measurement that matters. With the package verified `disabled-user` before *and* after a
+further clean restart:
+
+```
+  package still disabled? YES
+  processes:
+   9275  00:17 system_server
+   9695  00:14 com.android.systemui     <- started 3 s after system_server
+```
+
+CI's own logcat says the same without any restart at all. In the gating leg of run 34006456986,
+`pm disable-user` is accepted at 02:28:37.9 and the package really is in `pm list packages -d` at
+02:29:33 — and SystemUI is started at 02:28:39.5 and again at 02:28:52.3, the second of which
+(pid 4275) is alive for the whole instrumentation run.
+
+**So `pm disable-user --user 0 com.android.systemui` does not stop SystemUI starting on this
+image**, with or without a framework restart, on CI or locally. The premise this section was
+built on — "the framework that comes back never starts SystemUI at all" — is false.
+
+Two things follow, pointing in opposite directions.
+
+- **The restart is removed rather than repaired**, in all three copies. It cost a leg every test
+  it had and there is nothing for it to buy. What is kept is the 45-second window with zero new
+  aborts, which was always the part doing the work: in that same run the boot aborts land at
+  02:28:18 and 02:28:43, and the wait is what puts instrumentation at 02:32:42 — after them
+  rather than inside one. The `pm disable-user` call is kept too, for a narrower reason than it
+  was written for: every green leg and every number quoted about this row was measured with it
+  applied, and changing the configuration while fixing a flake is not a trade worth making.
+- **The rate collapse recorded above is not evidence of what it says.** Both arms of that
+  comparison had SystemUI running. What it measured is a device twelve minutes into its uptime
+  against one that had just booted — a real difference, and a different claim. The quiet gate is
+  still worth having on exactly that reading.
 
 ### The two deviations, stated plainly
 
 1. **The renderer is ANGLE, not the host GPU.** Shared with nothing else in the matrix — API
    33–36 run `-gpu host` locally, and CI runs `swiftshader_indirect`.
-2. **SystemUI is disabled.** The API 37 leg does not run the same device configuration as any
-   other leg or as the Pixel. It was defensible here because nothing in this suite touched
-   system UI — Media3, FFmpeg and WorkManager tests — and because the alternative is no local
-   API 37 coverage at all. **Anything that ever does depend on system UI must not trust this
-   leg.** Something now does; see the section below.
+2. **SystemUI is asked to be disabled, and runs anyway.** This was written as the deviation that
+   mattered — "anything that ever does depend on system UI must not trust this leg" — and the
+   measurements above say the deviation does not exist: the package is marked `disabled-user` and
+   `com.android.systemui` is up for the whole leg regardless. **The correction is good news
+   rather than bad.** This row is *more* comparable to API 33–36 and to the Pixel than it has
+   been claiming, not less, and the test that depends on system UI (see the section below) was
+   never running in the exotic configuration this bullet describes. What `pm disable-user` leaves
+   behind is a package-manager flag nothing acts on.
 
 ### Something does depend on system UI now, and half of it is excluded
 
@@ -341,12 +406,13 @@ Added 2026-08-24, and the first entry on this page that is not a codec.
 
 `SafPickerRoundTripTest` drives the real system file picker and rotates the display. Both reach
 the gralloc mapper — DocumentsUI is another app's windows, and a rotation rebuilds every surface
-on screen — and **disabling SystemUI does not help**, because it removes the *idle* trigger
-(RegionSamplingThread's nav-bar luma sampling) and not this one.
+on screen — and **disabling SystemUI does not help**. Two reasons now, and only the first was
+known when this was written: it removes the *idle* trigger (RegionSamplingThread's nav-bar luma
+sampling) and not this one, and — see the section above — it does not remove SystemUI either.
 
-Measured one method per fresh emulator, `android-37.0`, `swangle_indirect`, SystemUI disabled and
-verified quiet — separately, because inferring the second from the first is the mistake this
-page's opening correction is about:
+Measured one method per fresh emulator, `android-37.0`, `swangle_indirect`, with the disable
+applied and verified quiet — separately, because inferring the second from the first is the
+mistake this page's opening correction is about:
 
 | test | result on android-37.0 | `hasReadColorBufferDma` aborts in the window |
 |---|---|---|
@@ -356,6 +422,111 @@ page's opening correction is about:
 So a rotation, which rebuilds every surface at once, is what the mapper does not survive. Merely
 starting DocumentsUI is not. Only the rotation test carries `@FailsOnEmulatorApi37`; the picker
 test runs on the gating leg like anything else.
+
+#### That last sentence was wrong for twelve days, and the aborts in the table said so
+
+**Corrected 2026-09-05.** Read the second row again: the picker test passes *and takes four
+`hasReadColorBufferDma` aborts with it*. This section counted them, put them in the table, and then
+drew the conclusion from the pass/fail column alone. The right question is not "does the test
+pass" but "does the image survive it", and the answer had been printed in the right-hand column
+from the day it was written.
+
+Four gating API 37 runs read logcat-first — 34006456986, 34001744574, 34001377499, and the **green**
+34002313300 — say it without ambiguity. Each carries exactly two aborts before the suite starts
+(both `surfaceflinger`, during boot and the SystemUI disable) and then exactly **one** during it:
+
+| run | picker test window | the run's only in-suite abort | leg |
+|---|---|---|---|
+| 34006456986 | 02:33:04.2 → 02:34:46.9, **failed** | 02:34:46.845 | red, `failed: 1` |
+| 34001744574 | 00:55:41.4 → 00:57:23.9, **failed** | 00:57:23.794 | red, `failed: 1` |
+| 34001377499 | 00:35:53.3 → 00:36:00.6, passed | 00:35:59.662 | red, `failed: 0` |
+| 34002313300 | 00:58:12.7 → 00:58:19.8, passed | 00:58:19.218 | green |
+
+Every one is `system_server`, thread `TaskSnapshotPer`, and every one lands inside that test's
+window. Nothing else in the gating set reached the mapper at all. So the picker test is
+**deterministic** in what it does to the image and a coin flip in what the leg reports: 34001377499
+passed it and lost the leg from teardown with no failing test to name, and 34002313300 passed it
+0.6 s after the abort and went green.
+
+That is #108, which had been filed against this behaviour in August and left open because the
+trigger was unknown. The trigger is this test. It now carries `@FailsOnEmulatorApi37` too, and the
+marker's KDoc had to widen from "does not pass on this image" to "cannot be run on this image" to
+say so honestly.
+
+The stack, for the record, is a different caller from either of the two above:
+
+```
+Cmdline: system_server        name: TaskSnapshotPer
+Abort message: 'Assertion failed: !rcEnc->featureInfo()->hasReadColorBufferDma'
+
+  #04  mapper.ranchu.so   GoldfishMapper::readFromHost(cb_handle_t const&) const+543
+  #06  libui.so           android::Gralloc5Mapper::lock(...)+63
+  #10  libandroid_runtime.so  android::lockImageFromBuffer(...)+374
+  #15  framework.jar      android.media.ImageReader$SurfaceImage.getPlanes+50
+  #17  services.jar       com.android.server.wm.TaskSnapshotConvertUtil.copyToSwBitmapDirect+56
+  #28  services.jar       com.android.server.wm.SnapshotPersistQueue$StoreWriteQueueItem.writeBuffer+66
+  #32  services.jar       com.android.server.wm.SnapshotPersistQueue$1.run+186
+```
+
+WindowManager writing a task snapshot to disk, which needs the buffer as a software bitmap, which
+is the non-DMA readback path. `PickActivity` is started **into the app's own task** (`Task #11
+A=10234:org.libremediaconverter` in the logcat), so the snapshot being persisted is that task's,
+and the churn at the end of the pick is what schedules it.
+
+#### There is no shell knob for task snapshots, and that was checked rather than assumed
+
+#108 asks whether `TaskSnapshotPersister` is suppressible the way the region-sampling listener was.
+Probed on a local `android-37.0 google_apis x86_64` AVD, 2026-09-05:
+
+```
+getprop | grep -i snapshot                          # nothing but apexd-snapshotde
+settings list global | grep -iE 'snapshot|recents'  # empty
+device_config list window_manager | grep -i snapshot # empty
+cmd window help                                     # no snapshot or screenshot command
+dumpsys window | grep -i snapshot                   # mSnapshotEnabled=true, for Task and Activity
+```
+
+`mSnapshotEnabled` is real state and there is nothing that sets it from outside. The only
+`device_config` hits anywhere in the tree are aconfig flags — e.g.
+`windowing_frontend/com.android.window.flags.respect_requested_task_snapshot_resolution` — which
+tune the snapshot rather than disable it. So the marker is the available answer, not the lazy one.
+
+#### When the picker test does fail, the abort is the coda and not the cause
+
+Worth separating, because the failure message points the wrong way. In both runs where the test
+itself went red, it had been broken for 98 seconds before the abort landed. The discriminator is
+one line, present in both reds and absent from the green:
+
+```
+I/InputDispatcher: No new touched window at (539.0, 525.0) in display 0
+```
+
+(539, 525) is the centre of the fixture's root row — the same coordinates the green run clicks.
+The touch reaches no window and is discarded; `UiObject2.click()` cannot see that and returns
+normally. DocumentsUI then logs nothing at all, where the green run logs `DocumentStack` and
+`Creating new directory loader` 40 ms after its click. The walk waits out its timeout twice for a
+fixture it never navigated to, and by the time the back presses start, WindowManager is still
+saying `no window has focus but ...PickActivity may eventually add a window when it finishes
+starting up` — for another 63 s. All four presses are dropped, DocumentsUI ANRs on
+`Input dispatching timed out`, and only *then* does the abort fire and make the failure message
+read `no windows at all`.
+
+`SafPickerRoundTripTest.forceStopThePicker` is the answer to that half: `am force-stop` goes around
+input entirely, so the picker's process can be removed from a task no key press can reach and
+`pickTheFixture`'s whole-picker retry — which exists for exactly this — becomes reachable again.
+That is a fix to the test on every level, not to API 37.
+
+**It was made to bite before it was believed.** On a local API 36 emulator, with the walk cut short
+so the picker is left open and in front and with `device.pressBack()` removed, so that nothing but
+the force-stop can close it:
+
+| | result |
+|---|---|
+| with `forceStopThePicker()` | **passes** — `ActivityManager: Force stopping com.google.android.documentsui ... from pid 5334`, `Killing 5269:com.google.android.documentsui (adj 0)`, a second `PickActivity` opens, the retry completes the pick |
+| with the one call removed | **fails** — `the system picker would not close: after 4 back presses ... com.google.android.documentsui is in front`, which is the API 37 failure verbatim |
+
+The unmutated class passes on that emulator either way, which is the point of running the mutation
+at all: the recovery path is unreachable on a healthy device, so a green suite says nothing about it.
 
 #### The correction that produced that table
 

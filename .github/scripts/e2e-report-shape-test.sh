@@ -184,6 +184,42 @@ out="$(run_report "$root")"
 assert_contains "same-line annotation removed: counts 2, so it was worth 1" "$out" \
   "  baseline DEVIATION: the tree carries 2 tests marked \`@FailsOnEmulatorApi37\` but the baseline says 3 — update FAILS_ON_EMULATOR_API37_BASELINE"
 
+# ---------------------------------------------------------------------------
+# 4. A run the abort truncated, with fewer failures than the baseline: NOT a deviation.
+#
+# `expected` comes from `Starting N tests`, printed before anything can abort, so it still
+# answers "is the marked set the size the baseline says". `failed` is a tally of what actually
+# ran, and on a truncated run the tests after the abort never start. Measured on 2026-09-05, two
+# api37-debug dispatches of the same four marked tests: 4/4/4 and then 4/3/3. Announcing the
+# second as "one now passes" is the wrong reading, and #120 is the standing lesson about a notice
+# that is wrong often enough to be skimmed past.
+# ---------------------------------------------------------------------------
+root="$(make_root "$FIXTURE_DIR" 3)"
+cat > "$root/gradle.log" <<'TRUNCATED'
+> Task :app:connectedDebugAndroidTest
+Starting 3 tests on test(AVD) - 16
+There was 2 failure(s).
+Test run failed to complete. Expected 3 tests, received 2. onError: commandError=false message=INSTRUMENTATION_ABORTED: System has crashed.
+TRUNCATED
+out="$(run_report "$root")"
+assert_contains "truncated run: the truncation is reported"  "$out" '  completed cleanly: no'
+assert_absent   "truncated run: the short failure count is not a deviation" "$out" 'tests failed, the baseline is'
+
+# ---------------------------------------------------------------------------
+# 5. The same short failure count on a run that finished IS a deviation.
+#
+# The pair is the point: case 4 must not have bought its quiet by disabling the check outright.
+# ---------------------------------------------------------------------------
+root="$(make_root "$FIXTURE_DIR" 3)"
+cat > "$root/gradle.log" <<'CLEAN'
+> Task :app:connectedDebugAndroidTest
+Starting 3 tests on test(AVD) - 16
+There was 2 failure(s).
+CLEAN
+out="$(run_report "$root")"
+assert_contains "clean run, short by one: the deviation fires" "$out" \
+  '2 tests failed, the baseline is 3'
+
 echo
 if [ "$failures" -eq 0 ]; then
   echo "e2e-report-shape-test.sh: all checks passed"
