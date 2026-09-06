@@ -130,9 +130,9 @@ install for code that can never run — and on API 37 the full APK does not fit 
 - The `model` package is excluded from `ReturnCount` and `CyclomaticComplexMethod` only. It is the
   decision layer, where one branch is one documented user-visible outcome and the metric counts
   answers rather than complexity. Every other rule still applies there.
-- **Coverage is reported, not gated** — **92.8% of lines (2183/2352), 81.3% of branches
-  (1091/1342)**, measured 2026-09-02 with `./gradlew :app:jacocoTestReport`, against 584 JVM tests
-  in 87 classes.
+- **Coverage is reported, not gated** — **94.2% of lines (2234/2372), 87.5% of branches
+  (1171/1338)**, measured 2026-09-05 with `./gradlew :app:jacocoTestReport`, against 628 JVM tests
+  in 96 classes.
 
   **Every figure this file carried before 2026-08-24 was an artifact, roughly half the real one.**
   Robolectric loads classes through its own sandbox classloader with no source location, JaCoCo
@@ -283,6 +283,33 @@ install for code that can never run — and on API 37 the full APK does not fit 
   #194 before re-arguing either way — and note the reason it is worth cutting is not coverage but
   that the `runCatching` fallback logs "assuming permissive" while returning empty sets, which makes
   `canEncode` and `canDecode` answer *no* for everything.
+
+  **Wave 4's tests then landed on 2026-09-05**, as #206-#217 for the twelve tickets plus #218
+  (#159) and #219 (#122): 92.8% -> **94.2%** line, 81.3% -> **87.5%** branch, 584 -> 628 tests in 87
+  -> 96 classes. Missed lines 169 -> 138, missed branches 251 -> 167.
+
+  **Its branch move is a different animal from the 2026-08-29 seam work's, and the difference is the
+  point.** That one gained 6.3 branch points with the numerator up 37 (974 -> 1011) while the
+  denominator *fell* 70 (1410 -> 1340) — much of the rise was scaffolding leaving the measurement
+  rather than arms being covered. Here the numerator is up **80** (1091 -> 1171) and
+  the denominator moved **-4** (1342 -> 1338). So this one is almost entirely tests choosing arms
+  nothing had chosen, which is what the entry above warns to check before quoting a branch figure.
+  The line denominator rose the other way, 2352 -> 2372, and that is new production code rather than
+  untested code: the seams the wave cut — `capabilitiesFrom`, `ffprobeInfoFrom`, `sessionOutcome`,
+  and `sweepScope`/`startupSweep`.
+
+  **The two-filter method above is what found the work**, and its second filter earned its place:
+  the largest single gap of the wave (#192, the Cancel button never shown to reach WorkManager) sits
+  on lines that were already green and no line-level filter could see it.
+
+  One result worth carrying forward about *evidence* rather than coverage. #218 fixed a flake whose
+  reproduction is statistical, and running the whole suite six times per arm caught nothing either
+  way — at the observed rate a clean six-run arm is roughly a coin flip, so the comparison was
+  underpowered and proved nothing. What settled it was a deterministic mutation, and then the merge
+  train confirmed it by accident: the race reproduced on #217's Unit tests leg, which sits below
+  #218 and carries the unfixed scope. **Prefer a mutation that must go red to a repetition count**
+  when a fix is for something intermittent.
+
 - **Testable code is not done until it is tested.** If a piece is unit testable, it gets unit
   tests before it counts as done. If it is e2e testable, it gets e2e tests. Both clauses apply —
   a change that is both needs both.
@@ -410,7 +437,11 @@ Because versions float, a build can change without a commit. `./gradlew :app:dep
   run instead is `timeout` on the `Test` tasks plus the jstack watchdog beside it in
   `app/build.gradle.kts`, neither of which moves a thread. `HangBoundTest` guards both numbers,
   and **a timed-out run writes no XML for the class that hung** — the dump is its only
-  attribution, so do not delete the watchdog as stray config.
+  attribution, so do not delete the watchdog as stray config. It has since been exercised in anger:
+  on 2026-09-05 it caught #125's Room/WorkManager deadlock on CI, failing in 10m57s with the hung
+  test named, where that ticket had predicted a 60-minute cap and no cause. #125 is closed as
+  bounded on the strength of it — the inversion itself is internal to the two libraries and still
+  live at `work-runtime` 2.11.2 / `room` 2.7.0.
 - **The JVM suite does not run `LibreMediaConverterApp`.** `app/src/test/resources/robolectric.properties`
   names `TestLibreMediaConverterApp` for every test, and it differs from the real class in exactly
   one thing: `sweepScope` is `Dispatchers.Unconfined`, so the startup staging sweep finishes before
