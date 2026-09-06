@@ -14,6 +14,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * One file, offered to the system file picker, so that picking one can be tested at all.
@@ -104,6 +106,18 @@ public final class FixtureDocumentsProvider extends DocumentsProvider {
     private static final String ROOT_DOCUMENT_ID = "root";
     private static final String FIXTURE_DOCUMENT_ID = "root/" + FIXTURE_DISPLAY_NAME;
 
+    /**
+     * Prefix for documents this provider CREATES, as opposed to the one it serves for reading.
+     *
+     * <p>Two namespaces rather than one so a destination can never be confused with the fixture.
+     * The fixture is read-only and must stay that way for the picker tests; a destination is
+     * writable and deletable, which is what {@code PublishToRealSafDestinationTest} needs.
+     */
+    public static final String DESTINATION_PREFIX = "dest/";
+
+    /** Document ids {@link #deleteDocument} was called with, newest last. Cleared by {@link #reset}. */
+    private static final List<String> DELETED = new ArrayList<>();
+
     /** Already in this source set, and already a real H.264 MP4 the engines can open. */
     private static final String FIXTURE_ASSET = "sample_h264.mp4";
 
@@ -147,7 +161,7 @@ public final class FixtureDocumentsProvider extends DocumentsProvider {
             .add(Root.COLUMN_TITLE, ROOT_TITLE)
             .add(Root.COLUMN_SUMMARY, "Instrumentation fixture")
             .add(Root.COLUMN_MIME_TYPES, FIXTURE_MIME_TYPE)
-            .add(Root.COLUMN_FLAGS, Root.FLAG_LOCAL_ONLY)
+            .add(Root.COLUMN_FLAGS, Root.FLAG_LOCAL_ONLY | Root.FLAG_SUPPORTS_CREATE)
             .add(Root.COLUMN_ICON, android.R.drawable.ic_menu_gallery);
         return cursor;
     }
@@ -159,6 +173,8 @@ public final class FixtureDocumentsProvider extends DocumentsProvider {
             addDirectoryRow(cursor);
         } else if (FIXTURE_DOCUMENT_ID.equals(documentId)) {
             addFixtureRow(cursor);
+        } else if (documentId != null && documentId.startsWith(DESTINATION_PREFIX)) {
+            addDestinationRow(cursor, documentId);
         } else {
             throw new FileNotFoundException("no such document: " + documentId);
         }
@@ -178,10 +194,76 @@ public final class FixtureDocumentsProvider extends DocumentsProvider {
     @Override
     public ParcelFileDescriptor openDocument(String documentId, String mode, CancellationSignal signal)
             throws FileNotFoundException {
-        if (!FIXTURE_DOCUMENT_ID.equals(documentId)) {
+        if (FIXTURE_DOCUMENT_ID.equals(documentId)) {
+            return ParcelFileDescriptor.open(fixtureFile(), ParcelFileDescriptor.MODE_READ_ONLY);
+        }
+        if (documentId == null || !documentId.startsWith(DESTINATION_PREFIX)) {
             throw new FileNotFoundException("no such document: " + documentId);
         }
-        return ParcelFileDescriptor.open(fixtureFile(), ParcelFileDescriptor.MODE_READ_ONLY);
+        int flags = "r".equals(mode)
+            ? ParcelFileDescriptor.MODE_READ_ONLY
+            : ParcelFileDescriptor.MODE_READ_WRITE | ParcelFileDescriptor.MODE_TRUNCATE;
+        return ParcelFileDescriptor.open(destinationFile(documentId), flags);
+    }
+
+    /**
+     * Creates a real, empty file and reports the document id for it.
+     *
+     * <p><b>Empty is the whole point, and this provider does not get to decide it.</b> The premise
+     * under test in {@code PublishToRealSafDestinationTest} is what <i>DocumentsUI</i> hands back
+     * from {@code ACTION_CREATE_DOCUMENT}, and {@code OutputPublisher.destinationIsKnownEmpty}
+     * authorises its cleanup delete only on a positive zero. This creates the file and writes
+     * nothing to it, which is what the SAF contract documents; the test asserts what actually came
+     * back rather than trusting either side.
+     */
+    @Override
+    public String createDocument(String parentDocumentId, String mimeType, String displayName)
+            throws FileNotFoundException {
+        if (!ROOT_DOCUMENT_ID.equals(parentDocumentId)) {
+            throw new FileNotFoundException("cannot create in: " + parentDocumentId);
+        }
+        String documentId = DESTINATION_PREFIX + displayName;
+        File file = destinationFile(documentId);
+        try {
+            if (!file.createNewFile() && !file.exists()) {
+                throw new FileNotFoundException("could not create: " + documentId);
+            }
+        } catch (IOException e) {
+            throw new FileNotFoundException("could not create " + documentId + ": " + e);
+        }
+        return documentId;
+    }
+
+    @Override
+    public void deleteDocument(String documentId) throws FileNotFoundException {
+        if (documentId == null || !documentId.startsWith(DESTINATION_PREFIX)) {
+            throw new FileNotFoundException("refusing to delete: " + documentId);
+        }
+        synchronized (DELETED) {
+            DELETED.add(documentId);
+        }
+        destinationFile(documentId).delete();
+    }
+
+    /** Document ids {@link #deleteDocument} was called with, newest last. */
+    public static List<String> deletedDocumentIds() {
+        synchronized (DELETED) {
+            return new ArrayList<>(DELETED);
+        }
+    }
+
+    /** Forgets recorded deletes and removes created destinations. The process outlives one class. */
+    public static void reset(File filesDir) {
+        synchronized (DELETED) {
+            DELETED.clear();
+        }
+        File dir = new File(filesDir, "destinations");
+        File[] children = dir.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                child.delete();
+            }
+        }
     }
 
     private void addDirectoryRow(MatrixCursor cursor) {
@@ -189,8 +271,30 @@ public final class FixtureDocumentsProvider extends DocumentsProvider {
             .add(Document.COLUMN_DOCUMENT_ID, ROOT_DOCUMENT_ID)
             .add(Document.COLUMN_DISPLAY_NAME, ROOT_TITLE)
             .add(Document.COLUMN_MIME_TYPE, Document.MIME_TYPE_DIR)
-            .add(Document.COLUMN_FLAGS, 0)
+            .add(Document.COLUMN_FLAGS, Document.FLAG_DIR_SUPPORTS_CREATE)
             .add(Document.COLUMN_SIZE, null);
+    }
+
+    private void addDestinationRow(MatrixCursor cursor, String documentId) throws FileNotFoundException {
+        File file = destinationFile(documentId);
+        if (!file.exists()) {
+            throw new FileNotFoundException("no such document: " + documentId);
+        }
+        cursor.newRow()
+            .add(Document.COLUMN_DOCUMENT_ID, documentId)
+            .add(Document.COLUMN_DISPLAY_NAME, documentId.substring(DESTINATION_PREFIX.length()))
+            .add(Document.COLUMN_MIME_TYPE, FIXTURE_MIME_TYPE)
+            .add(Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_DELETE | Document.FLAG_SUPPORTS_WRITE)
+            .add(Document.COLUMN_SIZE, file.length())
+            .add(Document.COLUMN_LAST_MODIFIED, file.lastModified());
+    }
+
+    private File destinationFile(String documentId) throws FileNotFoundException {
+        File dir = new File(getContext().getFilesDir(), "destinations");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            throw new FileNotFoundException("could not make the destinations directory");
+        }
+        return new File(dir, documentId.substring(DESTINATION_PREFIX.length()));
     }
 
     private void addFixtureRow(MatrixCursor cursor) throws FileNotFoundException {
