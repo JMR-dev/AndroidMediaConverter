@@ -312,6 +312,18 @@ on sample media that is deliberately not committed. Its third test,
 `reportDeviceEncoderCapabilities`, has no such guard and runs. A level reporting 0 skipped
 would mean someone had staged sample files, not that something improved.
 
+**Since #223 there is a third, and it is the interesting one.**
+`HardwareFallbackTest.aFileMedia3CannotDecodeStillConvertsViaFfmpeg` is `assumeTrue`-guarded on
+`AndroidDeviceCodecs.get().canEncode(H265)`, which is false on every emulator image — so it now
+skips here and runs only on the Pixel. It used to *pass* on emulators without ever attempting the
+hardware path, which is worse. **Expect `skipped="3"` locally**, and note the guard is a property
+of the machine rather than of staged files: a level reporting 2 would mean an emulator image had
+gained a hardware HEVC encoder, which is worth knowing.
+
+That test's KDoc carries the measurement, including the part that decides it: forcing the route to
+Media3 anyway does *not* produce a fallback, because the goldfish decoder decodes the High 4:4:4
+fixture despite declaring `NoSupport` for its profile.
+
 ### What the sweep adds, and what it does not
 
 **The renderer rule held four more times.** No boot log contains the string

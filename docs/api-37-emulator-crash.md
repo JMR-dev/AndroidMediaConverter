@@ -443,7 +443,7 @@ Four gating API 37 runs read logcat-first — 34006456986, 34001744574, 34001377
 | 34002313300 | 00:58:12.7 → 00:58:19.8, passed | 00:58:19.218 | green |
 
 Every one is `system_server`, thread `TaskSnapshotPer`, and every one lands inside that test's
-window. Nothing else in the gating set of 57 reaches the mapper at all. So the picker test is
+window. Nothing else in the gating set reached the mapper at all. So the picker test is
 **deterministic** in what it does to the image and a coin flip in what the leg reports: 34001377499
 passed it and lost the leg from teardown with no failing test to name, and 34002313300 passed it
 0.6 s after the abort and went green.

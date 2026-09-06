@@ -9,9 +9,9 @@ package org.libremediaconverter
  * That is the whole reason there is one annotation rather than a pair of test lists: two lists
  * drift, and the drift is silent in both directions (a test that runs nowhere reads as green).
  *
- * **"Cannot be run" covers two things, and it said only the first until 2026-09-05.** Three of the
- * four carriers simply fail: two Media3 transcodes die in the image's own `c2.goldfish.h264
- * .decoder`, and the SAF rotation test takes the framework down with it. The fourth —
+ * **"Cannot be run" covers two things, and it said only the first until 2026-09-05.** Four of the
+ * five carriers simply fail: three Media3 tests die in the image's own `c2.goldfish.h264.decoder`,
+ * and the SAF rotation test takes the framework down with it. The fifth —
  * `SafPickerRoundTripTest.pickingAFileThroughTheSystemPickerFillsInTheFileCard` — **passes about
  * half the time and aborts `system_server` every time**, which is worse for a gating leg than an
  * honest failure: it fails the leg from the teardown, with no failing test to point at (#108).
@@ -26,7 +26,7 @@ package org.libremediaconverter
  *
  * Removing it is the goal, and the trigger is written down: a new API 37.x system image, or an
  * ATD image for 37. Delete the annotation from the tests, and the advisory job goes empty and
- * the gating one grows by four.
+ * the gating one grows by [FAILS_ON_EMULATOR_API37_BASELINE].
  *
  * **How many tests carry it is committed below**, as [FAILS_ON_EMULATOR_API37_BASELINE], and the
  * advisory job checks the run against it. Adding or removing a marker means changing that number
@@ -51,13 +51,14 @@ annotation class FailsOnEmulatorApi37
  * A *smaller* failure count is the interesting direction: it means one of them now passes, which
  * is the trigger the KDoc above names for deleting the annotation.
  *
- * **The fourth carrier is the one to read that sentence carefully for.**
+ * **The picker test is the one to read that sentence carefully for.**
  * `pickingAFileThroughTheSystemPickerFillsInTheFileCard` was marked on 2026-09-05 for aborting
  * `system_server` rather than for failing (#108), and on the gating leg it passed two runs of
  * four. It fails on the advisory leg because the rotation test runs before it and takes the
  * framework down first — measured, `api37-debug.yml` run 34008889182, which reports
  * `expected: 4, received: 4, failed: 4` with the four in the order Media3, Media3, rotation,
- * picker.
+ * picker. (Those dispatches predate the third Media3 marker landing on `main`, so their totals
+ * are four rather than five; the ordering they establish is what matters here.)
  *
  * **But a second dispatch of the identical configuration reported 4/3/3**, having lost the last
  * test to the abort rather than to anything about the test list, and that is why
@@ -77,4 +78,4 @@ annotation class FailsOnEmulatorApi37
  * `INSTRUMENTATION_ABORTED`, so the count is a number taken from a partial run. The report
  * records the truncation next to the counts for that reason.
  */
-const val FAILS_ON_EMULATOR_API37_BASELINE = 4
+const val FAILS_ON_EMULATOR_API37_BASELINE = 5

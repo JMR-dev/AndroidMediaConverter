@@ -56,6 +56,33 @@ class FFmpegConcatCommandTest {
         assertEquals("0", args[args.indexOf("-safe") + 1])
     }
 
+    /**
+     * The gate that `-safe 0` does not open, and the one every real join needs (#238).
+     *
+     * `-safe 0` permits absolute *paths*; the concat demuxer separately whitelists the *protocol*,
+     * defaulting to `file,crypto,data`. `JoinScreen` picks with `OpenMultipleDocuments`, so real
+     * inputs are `content://` and `ConcatEngine` writes `ffkitsaf:` paths into the list file — which
+     * the demuxer refused outright, failing every stream-copy join a user could actually start.
+     *
+     * The re-encode strategy has no equivalent assertion because it needs none: it passes each
+     * input with its own `-i` and never feeds the demuxer a list file. That asymmetry is exactly
+     * why the defect survived — joining mismatched clips over SAF worked.
+     */
+    @Test
+    fun `stream copy whitelists the protocol its list file entries actually use`() {
+        val args = FFmpegConcatCommand.build(
+            ConcatStrategy.STREAM_COPY,
+            inputs,
+            listFile,
+            output,
+            OutputFormat.MP4_H264,
+        )
+        val whitelist = args[args.indexOf("-protocol_whitelist") + 1].split(",")
+        assertTrue("ffmpeg-kit's SAF scheme must be permitted, got $whitelist", "ffkitsaf" in whitelist)
+        // The defaults have to survive too: the list file itself is opened over `file`.
+        assertTrue("the demuxer still reads the list file itself, got $whitelist", "file" in whitelist)
+    }
+
     @Test
     fun `re-encode passes every input separately and builds a filter graph`() {
         val args = FFmpegConcatCommand.build(

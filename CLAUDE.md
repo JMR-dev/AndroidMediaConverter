@@ -76,19 +76,19 @@ days. Read it as the current answer, and see the git history if you need the old
   `angle_indirect` and `swangle_indirect` all boot, while `auto`, `off`, `guest` and
   `swiftshader_indirect` do not. `docs/local-emulator.md` has the evidence and the per-API renderer
   table.
-- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Four** of the 60 instrumented
-  tests cannot be *run* on that image, for three unrelated reasons: two Media3 hardware transcodes
-  fail inside the emulator's own `c2.goldfish.h264.decoder`, one SAF test takes the framework down
-  when it rotates the display, and its sibling — the SAF picker round trip — aborts `system_server`
-  from the task-snapshot path whether it passes or not. All four carry `@FailsOnEmulatorApi37` and
-  run in a separate `continue-on-error` job; the gating leg runs the other 56.
+- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Five** of the 68 instrumented
+  tests cannot be *run* on that image, for three unrelated reasons: three Media3 tests fail inside
+  the emulator's own `c2.goldfish.h264.decoder`, one SAF test takes the framework down when it
+  rotates the display, and its sibling — the SAF picker round trip — aborts `system_server` from
+  the task-snapshot path whether it passes or not. All five carry `@FailsOnEmulatorApi37` and run
+  in a separate `continue-on-error` job; the gating leg runs the other 63.
 
   **That third reason is why "cannot pass" became "cannot be run" on 2026-09-05.** Four gating
   runs were read logcat-first — 34006456986, 34001744574, 34001377499 and the green 34002313300 —
   and each carries exactly two `hasReadColorBufferDma` aborts before the suite (surfaceflinger,
   during boot and the SystemUI disable) and exactly **one** during it: `system_server`, thread
   `TaskSnapshotPer`, always inside the picker test's window, and nothing else in the gating set
-  reaches the mapper at all. Whether the leg went red was luck — one run passed the test and lost
+  reached the mapper at all. Whether the leg went red was luck — one run passed the test and lost
   the leg anyway with `failed: 0`, another passed it 0.6 s after the abort and went green. That is
   #108, it cost roughly a third of the gating legs over the wave-4 landings (#190), and a marker
   is what it needed. `docs/api-37-emulator-crash.md` has the timings.
@@ -108,7 +108,7 @@ days. Read it as the current answer, and see the git history if you need the old
   describes everything in it. The name is kept deliberately — it is not a required context and
   people have learned to look for it — so **read the marker, not the name**, for what it holds.
   **It is red on every PR, by design**: do not read it as your change breaking something, and do
-  not read a green run as evidence those four tests pass.
+  not read a green run as evidence those five tests pass.
   `docs/api-37-emulator-crash.md` has the measurements.
 
   **That instruction is also why nobody looks, so the job now reports its own shape** — expected,
@@ -128,7 +128,7 @@ days. Read it as the current answer, and see the git history if you need the old
   is gradle never returning, so the log it left says nothing about it.
 
 Still true, and the reason the advisory job is not simply deleted: **API 37 needs a manual check on
-the Pixel 10 Pro XL before each release.** Those four tests are the one thing CI cannot answer
+the Pixel 10 Pro XL before each release.** Those five tests are the one thing CI cannot answer
 for.
 
 On a device or emulator, build only the ABI it can execute:
@@ -331,6 +331,46 @@ install for code that can never run — and on API 37 the full APK does not fit 
   train confirmed it by accident: the race reproduced on #217's Unit tests leg, which sits below
   #218 and carries the unfixed scope. **Prefer a mutation that must go red to a repetition count**
   when a fix is for something intermittent.
+
+  **Every number above is `testDebugUnitTest` only, and on 2026-09-05 the instrumented suite got its
+  first read for that reason** — `docs/e2e-read-findings.md`, entries **E1-E6**, tickets
+  **#223-#230**. Four waves had been steered by a figure that **cannot see `app/src/androidTest` at
+  all**, so nothing had ever asked what those 60 device tests pin, only that they were green.
+
+  **It found one test that passes while testing nothing, and it is the one that matters most.**
+  `HardwareFallbackTest` is the only automated check of the hardware→software fallback against a
+  *real* codec failure, and on run `34004304566` the API 33, 34, 35 and 37 legs each log
+  `Routing sample_h264_444.mp4 -> ... via FFMPEG (NO_HARDWARE_ENCODER)` (API 36's logcat artifact on
+  that run is truncated, so it is unread rather than different): emulators expose no
+  hardware encoder, so the job never reaches Media3 and the `catch` it exists to prove is never
+  entered. Its two assertions — succeeded, output non-empty — are true anyway, and it finishes in
+  448 ms. **Deleting that `catch` reddens nothing on any leg** (#223).
+
+  Two things generalise from it. **A test can assert and still not reach**, which no coverage
+  number and no "does it assert something" review would catch — the filter that works is *does this
+  test's premise hold on the machine that runs it?*. And the codebase **already knew**: the sibling
+  `ForcedFailureTest` pins `DeviceCodecs.PERMISSIVE` against exactly this hazard and writes out why,
+  as does `ConversionWorkerTest`. The difference is that their assertions are about the *path*, so
+  without the pin they would fail loudly; `HardwareFallbackTest`'s are about the *output*, so it
+  passes quietly. **Prefer asserting the path over asserting the artefact** where the two differ.
+
+  The read was a triage, not a test push, and six of its seven findings are prose rather than code —
+  the suite itself is in good shape. What had drifted is its self-description.
+
+  **Working the tickets then found the thing the read could not: one production defect.** #238 —
+  joining files picked through the system picker failed outright on the stream-copy path. The
+  concat demuxer whitelists protocols separately from `-safe 0`, and `ffkitsaf` was not on the
+  list; only `STREAM_COPY` feeds it a list file, and every existing join test passed
+  `Uri.fromFile`, so **the one broken combination was the only one a user could reach**. Not a
+  missed line and not an unasserted value — two covered things no test put together, which is the
+  gap shape a coverage number is worst at.
+
+  **E7 is the other reusable result**, because it re-scoped its own ticket. A real
+  `DocumentsProvider` cannot be reached without the picker: an unprotected one is refused at
+  install, instrumentation runs in the app's uid so the test APK's identity is no help, and shell
+  identity is denied too — each denial naming `ACTION_OPEN_DOCUMENT`. So #226 has no cheap headless
+  half. But the *input* bridge needs no documents provider at all, which is what kept #225 headless
+  and is how #238 surfaced.
 
 - **Testable code is not done until it is tested.** If a piece is unit testable, it gets unit
   tests before it counts as done. If it is e2e testable, it gets e2e tests. Both clauses apply —

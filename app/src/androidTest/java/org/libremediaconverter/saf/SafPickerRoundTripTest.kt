@@ -207,6 +207,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * driven there at all. That is why this gap survived as long as it did.
  * `tools/local-emulator/run-e2e.sh` runs API 33-36 on the development host, and both tests pass
  * there: **59 / 0 / 0 / 2 at API 33 and again at API 36**, whole suite, 2026-08-24.
+ * (Since #223 the skip column reads 3 on an emulator — `HardwareFallbackTest` now announces
+ * that it cannot run without a hardware HEVC encoder rather than passing vacuously.)
  *
  * ### Why only the rotation test carries [FailsOnEmulatorApi37]
  *
