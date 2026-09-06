@@ -413,6 +413,13 @@ install for code that can never run — and on API 37 the full APK does not fit 
   the level is uncovered when it is not — CI's gating leg being what answers for it then. It never
   claims five levels having run four.
 
+  **It runs shellcheck too, at CI's exact pin, over `git ls-files '*.sh'`** — the same digest and
+  the same file set that leg uses. That gap was found the hard way: the gate checked ktlint,
+  detekt and Android lint, so a new `.sh` file was precisely the case where it passed and CI still
+  went red, and the first file it could not check was itself. **The digest is read out of
+  `status_check.yml` rather than copied** — two copies drift, and the symptom of that drift is the
+  gate passing while CI fails, which is the one thing this check exists to prevent.
+
   The sweep is cached under the hash of the **`app/src` subtree**, not the whole repo tree. Keying
   it on the whole tree was the first cut and it was wrong: editing a comment in `CLAUDE.md` threw
   away a sweep of byte-identical application code and re-ran forty minutes of emulators to prove
