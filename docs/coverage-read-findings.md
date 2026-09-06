@@ -1,9 +1,11 @@
 # Coverage-read findings
 
-**Status:** ten findings, none fixed, none urgent. F1-F4 came from the 2026-08-26 read; F5 was added
-on 2026-08-27 while decomposing #132; **F6-F10 were added on 2026-09-02 from the wave-4 read**. Every
-entry here is a *code* observation — something a test would document rather than repair. The test
-gaps found in the same reads are tickets, not entries here; see [Not covered here](#not-covered-here).
+**Status:** ten findings; **F1 is closed — by #254 on 2026-09-06, which found it was a defect rather
+than the dead arm it was filed as** — and the other nine stand, none urgent. F1-F4 came from the
+2026-08-26 read; F5 was added on 2026-08-27 while decomposing #132; **F6-F10 were added on
+2026-09-02 from the wave-4 read**. Every entry here is a *code* observation — something a test
+would document rather than repair. The test gaps found in the same reads are tickets, not entries
+here; see [Not covered here](#not-covered-here).
 **Scope:** what a JaCoCo read turned up that writing a test would not fix. This is a survey, not a
 work order. Acting on any entry is a separate decision and would be its own commit.
 **Last verified:** `main` at `54ca2dd`, 2026-09-02. Coverage measured that day with
@@ -40,7 +42,9 @@ Same vocabulary as `defect-audit.md`, deliberately, so the two read alike:
 - **No action** — recorded because it looks like a finding and is not.
 
 Nothing below was observed on a device, and nothing below needs to be: every entry is a claim about
-what the code says, checkable by reading it.
+what the code says, checkable by reading it. **F1's resolution is the exception, and it had to be**:
+what that entry turned on — whether the encoder it named exists in the shipped binary — is not
+readable from the source at all.
 
 ---
 
@@ -109,6 +113,56 @@ files agree and to say so in one place.
    that produces a playable Vorbis file; if no, go to 2.
 2. Correct the `ContainerCapabilities.kt:84` comment, which is false as written, and give the
    `FFmpegCommandBuilder` arm the treatment `Media3Engine.kt:221-233` already models.
+
+### Resolved 2026-09-06 (#254) — and the arm was not merely unreached, it was unrunnable
+
+Vorbis is now in `ENCODABLE_AUDIO`, `OutputFormat.OGG_VORBIS` is a one-tap preset beside `OPUS`,
+and `FFmpegEngineTest.encodesOggVorbisThroughAnEncoderTheBundledBinaryActuallyHas` asserts the
+produced track's MIME and its channel count. The false comment is gone.
+
+**The finding this entry did not have is that `-c:a libvorbis` could never have worked.** Three
+independent sources agree and none of them is the coverage report:
+
+| source | says |
+|---|---|
+| `bin/README.md`'s configure line, read back out of the shipped `libavutil.so` | `--enable-libopus`, `--enable-libmp3lame`, `--enable-libvpx`, `--enable-libx264/5`, `--enable-libdav1d`, `--enable-libsvtav1`, `--enable-libjxl` — **no `--enable-libvorbis`** |
+| `tools/ffmpeg/build-ffmpeg.sh` | neither `COMMON_LIBS` nor `EXTRA_LIBS` names it |
+| `strings` on `jni/x86_64/libavcodec.so` | the `lib*` encoder names present are `libdav1d libjxl libmp3lame libopus libsvtav1 libvpx libx264 libx265`. `libvorbis` is absent; `libavcodec/vorbisenc.c` is present |
+
+So the first user to pick Ogg Vorbis would have got `Unknown encoder 'libvorbis'`. The arm was
+*wrong*, not just dead — and **nothing short of building the command and running it could have
+found that**, which is why the e2e half of this ticket is the load-bearing half. It is #238's shape
+again: two covered facts (a builder arm, a configure line) that no test put together.
+
+**The AAR was rebuilt rather than the arm rewritten, and the measurements are why.** A first pass
+at this ticket implemented Vorbis on FFmpeg's in-tree `vorbisenc.c`, which the binary already had.
+It works, and it is not good enough to sit in a picker beside MP3, FLAC and Opus:
+
+| | `libvorbis` | in-tree `vorbis` |
+|---|---|---|
+| experimental gate | none | **needs `-strict experimental`** |
+| channels | mono, stereo, surround | **stereo only** |
+| `-q:a 0..10`, one 3 s clip | 10931 -> 64166 bytes | 7549 -> 14645 bytes |
+
+`AV_CODEC_CAP_EXPERIMENTAL` is upstream FFmpeg saying *do not ship this by accident*. The
+stereo limit forces `-ac 2`, so a mono source is silently upmixed — and **this repo's own fixture,
+`sample_h264.mp4`, is mono**, so the compromise was not hypothetical. And a quality knob spanning
+2x its floor against libvorbis's 6x has nowhere to go: libvorbis at `-q:a 5` writes 16429 bytes of
+that clip, more than the in-tree encoder produces at q10.
+
+So #254 added `--enable-libvorbis` to `tools/ffmpeg/build-ffmpeg.sh` and rebuilt: a new ~35 MB blob
+in git history permanently, a new configure line and SHA-256 in `bin/README.md`. What that bought
+is the arm as originally written — `-c:a libvorbis -q:a 5`, no experimental gate, no forced
+channel count — and mono that stays mono, which the e2e test asserts alongside the track MIME.
+
+Two things about the flag are worth keeping, because both are ways to get this wrong quietly.
+ffmpeg-kit's `--enable-*` names come from its own `get_library_name()` and are not FFmpeg's — it is
+`--enable-lame` for libmp3lame and `--enable-opus` for libopus — so `--enable-vorbis` is the
+plausible guess and it is **wrong**; id 9 is literally `libvorbis`, so `--enable-libvorbis` is
+right, and it pulls libogg in with it. And ffmpeg-kit does **not** error on an unrecognised
+`--enable-*`, so a rebuild that quietly omitted the library looks exactly like one that worked.
+`strings jni/*/libavcodec.so | grep -x libvorbis` and the e2e test are the only two things that
+tell those apart.
 
 ---
 
@@ -444,7 +498,7 @@ the cheaper order.
 
 | ID | Finding | Severity | Evidence | Action |
 |---|---|---|---|---|
-| F1 | `FFmpegCommandBuilder` emits a Vorbis encoder `ContainerCapabilities` says does not exist | low | confirmed by inspection; unreachability traced through four call sites | **decide**: feature or dead arm — the comment is false either way |
+| F1 | `FFmpegCommandBuilder` emits a Vorbis encoder `ContainerCapabilities` says does not exist | low → **the severity was wrong** | confirmed by inspection; unreachability traced through four call sites | **closed #254 as a feature** — and the encoder it named is not in the shipped binary, so the arm could never have run |
 | F2 | `hardwareEncodeAvailable` written, never read; KDoc describes removed behaviour | low | confirmed by inspection; `FFmpegCommandBuilderTest:132` corroborates | **decide**: delete or mark vestigial |
 | F3 | `ConversionRequest.videoCodec` / `.audioCodec` have no callers | low | confirmed by inspection | delete, or keep for symmetry — **not** a test gap |
 | F4 | Two private guards reachable only by direct call | n/a | confirmed by inspection | **no action** — named exemption, per #88 |

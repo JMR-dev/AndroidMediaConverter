@@ -500,7 +500,7 @@ Every one was read. **None of them is an e2e test gap**, which is the result:
 | 3 | `CopyPlanner:28`, `OutputFormat:222-223` | public members with no callers. **#253**, with F5 |
 | 3 | `MediaProbe:210-212` | `probeWithFFprobe`'s `catch` — **F7's sibling, and now measured**. See below |
 | 2 | `FFmpegCommandBuilder:167-168` | `COPY`/`NONE -> error(...)` — F4-shaped, deliberately exempt |
-| 1 | `FFmpegCommandBuilder:188` | the `VORBIS` encode arm. No `OutputFormat` produces it, but `ContainerCapabilities` lists it for WEBM and OGG. **#254** |
+| 1 | `FFmpegCommandBuilder:188` | the `VORBIS` encode arm. No `OutputFormat` produced it, but `ContainerCapabilities` listed it for WEBM and OGG. **#254 — closed, and it was the row that turned out to be a defect**: the arm named `libvorbis`, which was not compiled into the shipped AAR at all, so it could never have run. Closing it meant rebuilding the AAR with `--enable-libvorbis`, not editing the arm. See F1 in `coverage-read-findings.md` |
 | 1 | `ConversionWorker:231` | `?: error("Could not open the input file.")`. `UnopenableUriTest` fails the job *downstream* of it, so the elvis is unprovoked — F4-shaped, same as the two above |
 
 **`MediaProbe:210-212` is the one that gained a measurement.** F7 ruled `probeWithExtractor`'s catch

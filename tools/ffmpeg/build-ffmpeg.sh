@@ -28,7 +28,10 @@ OUT=/work/out
 # Library selection
 # ---------------------------------------------------------------------------
 # Flag names come from get_library_name() in scripts/function.sh — note it is
-# --enable-lame, NOT --enable-libmp3lame.
+# --enable-lame, NOT --enable-libmp3lame. Read that function before adding one: the
+# names are ffmpeg-kit's, not FFmpeg's, and they agree only sometimes. libvorbis is
+# one that does agree (id 9 is literally "libvorbis"), so --enable-libvorbis is right
+# and the --enable-vorbis this rule would predict is not.
 #
 # android-media-codec gives FFmpeg the h264_mediacodec / hevc_mediacodec wrappers.
 # Those are the fallback-within-the-fallback: hardware encode from the FFmpeg side
@@ -41,6 +44,11 @@ COMMON_LIBS=(
   --enable-lame          # MP3 encode. Android has NO MP3 encoder at any API level,
                          # so this is the only way the app can output MP3 at all.
   --enable-opus
+  --enable-libvorbis     # Ogg Vorbis encode. Android has no Vorbis ENCODER at any API
+                         # level either, and FFmpeg's own in-tree vorbis encoder is
+                         # experimental, stereo-only and barely responds to -q:a, so
+                         # this is the only usable route. Pulls libogg in as its
+                         # dependency (ffmpeg-kit sets LIBRARY_LIBOGG with it).
   --enable-dav1d         # fast AV1 decode
 )
 

@@ -106,7 +106,10 @@ class Media3MuxersTest {
      * has changed its mind and somebody should say so on purpose.
      *
      * - Media3's MP4 muxer accepts Vorbis; [ContainerCapabilities] declines to offer it, because
-     *   Vorbis-in-MP4 is poorly supported by players.
+     *   Vorbis-in-MP4 is poorly supported by players. That refusal is about **this container**,
+     *   not about the codec: since #254 the app encodes Vorbis for Ogg, Matroska and WebM, and
+     *   the assertion below is what keeps MP4 out of that list on purpose rather than by
+     *   omission — it is `CARRIES_AUDIO[MP4]`, so widening the encodable set cannot reach it.
      * - The matrix offers MP3 and FLAC in MP4, which is legal and which FFmpeg writes happily, but
      *   Media3's MP4 muxer carries neither — so those jobs route to FFmpeg rather than failing.
      */

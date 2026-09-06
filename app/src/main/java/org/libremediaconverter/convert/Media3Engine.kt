@@ -230,6 +230,12 @@ class Media3Engine(private val context: Context) : HardwareTranscoder {
          * unreachable code buys nothing — but it is an entry waiting on a routing change rather
          * than a live one. `Media3EngineMimeTypesTest` routes all six encodable codecs and asserts
          * which three arrive, so if that set moves, the disagreement fails rather than surprises.
+         *
+         * **Unreachable here is not the same as unreachable.** Since #254 a Vorbis encode is a
+         * thing a user can ask for — `OutputFormat.OGG_VORBIS` — and it is served by
+         * `FFmpegCommandBuilder`, which is the whole point of the router rule above sending it
+         * there. What stays dead is this arm specifically, because `MEDIA3_AUDIO` still excludes
+         * Vorbis: Android has no Vorbis encoder at any API level, exactly as with MP3.
          */
         internal fun audioMimeTypeFor(codec: AudioCodec): String? = when (codec) {
             AudioCodec.AAC -> MimeTypes.AUDIO_AAC

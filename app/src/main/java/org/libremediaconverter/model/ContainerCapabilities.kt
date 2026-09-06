@@ -7,10 +7,14 @@ package org.libremediaconverter.model
  *
  * "Can MP4 carry AV1?" and "can this app make AV1?" have different answers, and remux is exactly
  * where the difference shows. MP4 carries AV1 and ALAC happily; neither engine here encodes them.
- * Matroska carries Vorbis; nothing in [org.libremediaconverter.ffmpeg.FFmpegCommandBuilder] emits a
- * Vorbis encoder. A single `isValid` boolean would answer one of those questions and give the wrong
+ * Matroska carries VP8; nothing in [org.libremediaconverter.ffmpeg.FFmpegCommandBuilder] emits a
+ * VP8 encoder. A single `isValid` boolean would answer one of those questions and give the wrong
  * error for the other — telling a user "MP4 cannot hold AV1" when the truth is "your AV1 file can be
  * copied into MP4, just not re-encoded to it".
+ *
+ * The example used to be Vorbis, and #254 is what stopped it being true — by rebuilding the
+ * bundled FFmpeg, because the Vorbis arm named `libvorbis` and the binary did not carry it. The
+ * gap is a video-only one now.
  *
  * So the matrix is indexed by mode: [CodecMode.COPY] asks only what the muxer accepts,
  * [CodecMode.ENCODE] additionally asks what this app can encode.
@@ -81,10 +85,28 @@ object ContainerCapabilities {
      */
     private val ENCODABLE_VIDEO = setOf(VideoCodec.H264, VideoCodec.H265, VideoCodec.VP9)
 
-    /** Vorbis is absent for the same reason: nothing here emits a Vorbis encoder. */
+    /**
+     * Audio codecs this app can encode. Every codec any container here carries, as of #254.
+     *
+     * The comment this replaces said "Vorbis is absent for the same reason: nothing here emits a
+     * Vorbis encoder", and it was false as written — `FFmpegCommandBuilder.audioArgs` has had a
+     * Vorbis arm since the builder existed. Its absence from this set was what made that arm
+     * unreachable, and nothing recorded the decision either way. It also hid a second fault: the
+     * arm named `libvorbis`, which was not compiled into the bundled binary, so the format the app
+     * declined to offer was one it could not actually have produced. #254 rebuilt the AAR with
+     * `--enable-libvorbis` and added the codec here in the same change.
+     *
+     * That makes this set equal to the union of [CARRIES_AUDIO], which `ContainerCapabilitiesTest`
+     * now asserts rather than leaving to be noticed. The consequence is that [validateAudio]'s
+     * "this app cannot encode X audio" arm has no reachable input. It stays: the video half of the
+     * same rule is live (VP8 and AV1), and this is where an ALAC or an AC-3 entry would land the
+     * day the matrix carries one. It is F4-shaped — a second line of defence that cannot currently
+     * be provoked — and the set-equality assertion is what turns that from a hope into a check.
+     */
     private val ENCODABLE_AUDIO = setOf(
         AudioCodec.AAC,
         AudioCodec.OPUS,
+        AudioCodec.VORBIS,
         AudioCodec.MP3,
         AudioCodec.FLAC,
         AudioCodec.PCM,

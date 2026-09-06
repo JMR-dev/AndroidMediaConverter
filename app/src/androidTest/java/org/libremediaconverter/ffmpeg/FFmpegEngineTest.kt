@@ -86,6 +86,25 @@ class FFmpegEngineTest {
         }
     }
 
+    /**
+     * Channels per track, or 0 for a track that does not declare any.
+     *
+     * Read out of the container rather than assumed from the request, because the thing worth
+     * catching is an encoder that quietly changed the channel count on the way through — which is
+     * exactly what a stereo-only encoder does to this class's mono fixture.
+     */
+    private fun channelCounts(file: File): List<Int> {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(file.absolutePath)
+            (0 until extractor.trackCount).map {
+                extractor.getTrackFormat(it).getInteger(MediaFormat.KEY_CHANNEL_COUNT, 0)
+            }
+        } finally {
+            extractor.release()
+        }
+    }
+
     // --- the formats that justify bundling FFmpeg at all -------------------
 
     @Test
@@ -147,6 +166,60 @@ class FFmpegEngineTest {
         // container-level assertions in this class check, and it is four bytes at offset 0.
         val magic = out.inputStream().use { String(it.readNBytes(4), Charsets.US_ASCII) }
         assertEquals("OggS", magic)
+    }
+
+    /**
+     * The first execution, ever, of the Vorbis encode arm — and the reason it needed one.
+     *
+     * `FFmpegCommandBuilder` carried `-c:a libvorbis` from the day it was written and nothing
+     * could ask for it: no preset produced `AudioCodec.VORBIS` and `ContainerCapabilities` left it
+     * out of the encodable set, so the arm was unreachable from both ends (#254). It was also
+     * **wrong**: `--enable-libvorbis` was in neither `bin/README.md`'s configure line nor
+     * `tools/ffmpeg/build-ffmpeg.sh`, and `libvorbis` was not among the encoder names in the
+     * shipped `libavcodec.so`. The first user to pick Ogg Vorbis would have got "Unknown encoder
+     * 'libvorbis'". #254 rebuilt the AAR with `--enable-libvorbis`; **this test is the only thing
+     * in the repo that can tell whether that rebuild actually included it**, because a wrong
+     * ffmpeg-kit `--enable-*` name is ignored silently and the JVM cannot tell a real encoder name
+     * from a fictional one.
+     *
+     * ## Why the container magic is not enough here
+     *
+     * `encodesOpus` above stops at `OggS`, and for that test it is sufficient. Here it would be
+     * **vacuous**: Vorbis and Opus are both Ogg streams, so this ticket's acceptance mutation —
+     * pointing the arm at `libopus` — produces a file with byte-identical first four bytes.
+     * Measured, not assumed: `-c:a libopus -b:a 128k -f ogg` on this class's own fixture writes
+     * `OggS` too. So the assertion has to reach the track, and `MediaExtractor` reporting
+     * `audio/vorbis` against `audio/opus` is what separates them.
+     *
+     * Asserted as the whole track list rather than as "contains Vorbis", which also pins that the
+     * `-vn` from the audio-only path really dropped the video: a stray video track would fail here
+     * rather than pass an `any { ... }` check.
+     *
+     * ## The channel count is the second claim, and it is not decoration
+     *
+     * `sample_h264.mp4` is **mono** — one AAC channel — and that is what makes this assertion
+     * bite. FFmpeg's in-tree `vorbis` encoder is stereo-only, so building on it forces `-ac 2` and
+     * silently upmixes every mono source, a compromise this app makes in no other arm. That
+     * compromise is the reason #254 rebuilt the binary rather than shipping the in-tree encoder,
+     * so re-adding `-ac 2` has to redden something: it reddens this.
+     */
+    @Test
+    fun encodesOggVorbisThroughAnEncoderTheBundledBinaryActuallyHas() {
+        val out = convert(OutputFormat.OGG_VORBIS)
+        assertTrue("no Ogg produced", out.exists() && out.length() > 0)
+
+        val magic = out.inputStream().use { String(it.readNBytes(4), Charsets.US_ASCII) }
+        assertEquals("OggS", magic)
+        assertEquals(
+            "expected a lone Vorbis track -- an Opus one would carry the same OggS magic",
+            listOf(MediaFormat.MIMETYPE_AUDIO_VORBIS),
+            trackMimes(out),
+        )
+        assertEquals(
+            "the fixture is mono and libvorbis takes any channel count, so nothing may upmix it",
+            listOf(1),
+            channelCounts(out),
+        )
     }
 
     /**
