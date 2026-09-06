@@ -1,6 +1,6 @@
 # E2E-read findings
 
-**Status:** six findings, none fixed, none urgent — **plus one confirmed vacuous test, which is a
+**Status:** seven findings; E4 fixed, the rest standing, none urgent — **plus one confirmed vacuous test, which is a
 ticket rather than an entry here** (see [Not covered here](#not-covered-here)). `E1`–`E6` came from
 the 2026-09-05 read of the instrumented suite. Every entry here is a *test-suite* observation —
 something a new test would not fix, because the test already exists and the problem is what it
@@ -242,6 +242,49 @@ visible skip or a red test, and that decision is the ticket's.
 
 ---
 
+## E7 — a real `DocumentsProvider` cannot be reached without the picker, so there is no cheap SAF test
+
+**Severity: n/a · Confirmed by measurement · this is a platform rule, not a gap**
+
+Added 2026-09-06, from doing #225 and #226 rather than from reading.
+
+`OutputPublisher.publish`'s destination side is asserted only against Robolectric fakes —
+`FakeSafProvider`, registered with `asDocumentsProvider = true`, which is the flag that *makes*
+`DocumentsContract.isDocumentUri` answer true. #226 split that into a cheap headless half (drive a
+real `DocumentsProvider` directly) and an expensive picker-driven half.
+
+**The cheap half does not exist.** Three approaches, all measured on an API 34 emulator:
+
+| approach | result |
+|---|---|
+| a second `DOCUMENTS_PROVIDER` declared **without** `MANAGE_DOCUMENTS` | refused at install: `SecurityException: Provider must be protected by MANAGE_DOCUMENTS` |
+| create the document as the **test APK**, which owns the provider | denied — instrumentation runs *in the target app's process*, so it carries the app's uid whatever `Context` is asked |
+| `uiAutomation.adoptShellPermissionIdentity(MANAGE_DOCUMENTS)` | denied identically |
+
+The denial names the only way in:
+
+> `Permission Denial: opening provider …FixtureDocumentsProvider from
+> ProcessRecord{… org.libremediaconverter/u0a192} requires that you obtain access using
+> ACTION_OPEN_DOCUMENT or related APIs`
+
+And the intent filter is not optional: without it `isDocumentUri` returns false, which is exactly
+the branch guarding `deletePartialOutput` — so a provider without the filter tests nothing the
+ticket is about.
+
+**So any test of `publish` against a real `DocumentsProvider` must drive DocumentsUI**, and pays
+#190's flake tax. The work is one item at that cost, not two, and #226 was updated to say so.
+
+### What this does *not* block, which is the useful half
+
+`FFmpegKitConfig.getSafParameterForRead` — the bridge on every real conversion and join — needs no
+documents provider. It opens a descriptor through the resolver, so **any readable `content://` URI
+exercises it**, and an ordinary `ContentProvider` may be exported without a permission. That is what
+`FixtureContentProvider` is, and it made #225 headless.
+
+**That distinction was worth the trouble**: the first test ever to hand the join path a real
+`content://` input found #238, a defect that broke joining for every user who picks matched files.
+The expensive gate protects the *destination* side; the *input* side never needed it.
+
 ## Summary
 
 | ID | Finding | Severity | Evidence | Action |
@@ -249,11 +292,12 @@ visible skip or a red test, and that decision is the ticket's.
 | E1 | `RemuxTest`'s KDoc claims engine assertions three of its tests correctly omit | low | confirmed by inspection; traced through `MEDIA3_CONTAINERS` | **one line of KDoc** — the tests are right |
 | E2 | Three of the 60 instrumented tests assert nothing; two never run | n/a | confirmed by inspection; `docs/local-emulator.md:305` | **no action** — deliberate; but 60 ≠ 60 |
 | E3 | `…AndReportsProgress` does not assert progress fired | low | confirmed by inspection; reason inline | **no action** — the name overstates, the KDoc corrects it |
-| E4 | The API 37 marker's KDoc says "two"; three tests carry it | low | confirmed by inspection; baseline const says 3 | **fix the sentence** |
+| E4 | The API 37 marker's KDoc says "two"; three tests carry it | low | confirmed by inspection; baseline const says 3 | **fixed** in #243 — it names the constant now |
 | E5 | `coverage-read-findings.md` F7's "uncovered" half is stale | low | confirmed by inspection; `RemuxTest.kt:111` drives it | **amend F7** — "device-only" stands, "uncovered" does not |
 | E6 | The device-capability assertion asks the class under test what to expect | low | confirmed by inspection; no third oracle exists on a device | **no action** — read with **#223** |
+| E7 | A real `DocumentsProvider` is unreachable without the picker, so #226 has no cheap half | n/a | measured three ways on API 34; each denial names `ACTION_OPEN_DOCUMENT` | **no action** — it re-scoped #226 |
 
-**Five of the six are prose, not code**, and that is the shape of this read. The instrumented suite
+**Six of the seven are prose, not code**, and that is the shape of this read. The instrumented suite
 is in good condition: 57 of its 60 tests bite, the fixtures are committed with their generation
 recipes, and the one class that asserts nothing says so in its first line. What this read found is
 that **the suite's self-description has drifted from the suite** in five small places and one large
@@ -312,14 +356,25 @@ decision, not a detail — see **E6** for why no third option exists — and **#
 
 | # | Gap |
 |---|---|
-| **#223** | `HardwareFallbackTest` never attempts the hardware path on any emulator leg |
-| **#224** | Cancelling a *running* native session, in any of the three engines |
-| **#225** | No `content://` input has reached a *successful* conversion — the ffkitsaf bridge |
-| **#226** | `OutputPublisher.publish` against a real `DocumentsProvider`, and the SAF premise it rests on |
-| **#227** | The notification's Cancel action has never been fired |
-| **#228** | `encodesFlacLosslessAudio` and `encodesOpus` pass on any non-empty file |
-| **#229** | FFmpeg's progress percentage is computed everywhere and asserted nowhere |
-| **#230** | *(spike)* whether a running conversion's process can be killed under instrumentation |
+| # | Gap | Outcome |
+|---|---|---|
+| **#223** | `HardwareFallbackTest` never attempts the hardware path on any emulator leg | closed — it skips instead of passing vacuously |
+| **#224** | Cancelling a *running* native session, in any of the three engines | closed — all three engines |
+| **#225** | No `content://` input has reached a *successful* conversion — the ffkitsaf bridge | closed, and it found **#238** |
+| **#226** | `OutputPublisher.publish` against a real `DocumentsProvider` | **open** — re-scoped by E7; one picker-driven item, not two |
+| **#227** | The notification's Cancel action has never been fired | closed |
+| **#228** | `encodesFlacLosslessAudio` and `encodesOpus` pass on any non-empty file | closed |
+| **#229** | FFmpeg's progress percentage is computed everywhere and asserted nowhere | closed |
+| **#230** | *(spike)* whether a running conversion's process can be killed | closed — it cannot; the runner shares the app's process |
+
+**The read's own result, once the tickets were worked: one production defect.** #238 — joining files
+picked through the system picker failed outright on the stream-copy path, because the concat demuxer
+whitelists protocols separately from `-safe 0` and `ffkitsaf` was not on the list. Only `STREAM_COPY`
+feeds the demuxer a list file, and every existing join test passed `Uri.fromFile`, so the one broken
+combination was the only one a user could reach.
+
+That is the argument for this kind of read in one line: the gap was not a missed line or an
+unasserted value, it was **a combination of two covered things that no test put together**.
 
 **Nothing here was filed as a coverage delta.** Each names the mutation that has to go red, which is
 the acceptance criterion wave 4 established and which caught two vacuous tests in that wave before
