@@ -411,3 +411,24 @@ Because versions float, a build can change without a commit. `./gradlew :app:dep
   `app/build.gradle.kts`, neither of which moves a thread. `HangBoundTest` guards both numbers,
   and **a timed-out run writes no XML for the class that hung** — the dump is its only
   attribution, so do not delete the watchdog as stray config.
+- **The JVM suite does not run `LibreMediaConverterApp`.** `app/src/test/resources/robolectric.properties`
+  names `TestLibreMediaConverterApp` for every test, and it differs from the real class in exactly
+  one thing: `sweepScope` is `Dispatchers.Unconfined`, so the startup staging sweep finishes before
+  `onCreate()` returns instead of running on `Dispatchers.IO`.
+
+  **That line is load-bearing — do not delete it as stray config.** Robolectric builds an
+  `Application` per test class that asks for one, and each `onCreate` launched a sweep over the
+  shared `<cacheDir>/conversions/` that nothing joined. So a test asserting about a staged file was
+  racing every sweep the classes before it had left in flight (#159). It was CI-only until wave 4
+  added ten Robolectric classes, at which point `OutputPublisherStagingTest` failed on roughly one
+  local run in six. Per-test opt-in was measured and rejected: **27 of the 58 Robolectric classes
+  touch that directory**. The `SupervisorJob` is kept in the test scope so a throwing sweep is
+  swallowed there exactly as in production — the dispatcher is the only intended difference.
+
+  **It cost one assertion, knowingly.** `AppStartSweepTest` used to open by asserting that the
+  manifest's `android:name` is what Robolectric instantiated, so the sweep is code that actually
+  runs. An `application=` override *replaces* the manifest rather than being checked against it, and
+  `applicationInfo.className` reports the override too — measured — so that claim is not merely
+  unasserted on the JVM now, it is unobservable, and a rewritten version would assert the override
+  against itself. **The manifest link is device-only.** What remains is the `as LibreMediaConverterApp`
+  cast in that class's `setUp`, which catches only the test app ceasing to extend the real one.
