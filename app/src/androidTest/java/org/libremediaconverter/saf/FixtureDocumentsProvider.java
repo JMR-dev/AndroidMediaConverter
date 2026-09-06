@@ -14,8 +14,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * One file, offered to the system file picker, so that picking one can be tested at all.
@@ -116,7 +114,6 @@ public final class FixtureDocumentsProvider extends DocumentsProvider {
     public static final String DESTINATION_PREFIX = "dest/";
 
     /** Document ids {@link #deleteDocument} was called with, newest last. Cleared by {@link #reset}. */
-    private static final List<String> DELETED = new ArrayList<>();
 
     /** Already in this source set, and already a real H.264 MP4 the engines can open. */
     private static final String FIXTURE_ASSET = "sample_h264.mp4";
@@ -239,34 +236,11 @@ public final class FixtureDocumentsProvider extends DocumentsProvider {
         if (documentId == null || !documentId.startsWith(DESTINATION_PREFIX)) {
             throw new FileNotFoundException("refusing to delete: " + documentId);
         }
-        synchronized (DELETED) {
-            DELETED.add(documentId);
-        }
         destinationFile(documentId).delete();
     }
 
-    /**
-     * Document ids {@link #deleteDocument} was called with, newest last.
-     *
-     * <p><b>Nothing reads this yet, and that is recorded rather than hidden (#250).</b> It was
-     * added with #226 to assert {@code OutputPublisher.deletePartialOutput} — D4's cleanup — against
-     * a real {@code DocumentsProvider}. #226 only reached the <i>success</i> path, so the
-     * {@code catch} that calls it is still asserted only against {@code FakeSafProvider} under
-     * Robolectric. It is kept because the forcing condition is one {@code openDestination} override
-     * away and #250 says exactly what to add; if that ticket is closed any other way, delete this
-     * and {@link #DELETED} with it rather than leaving an accessor implying coverage.
-     */
-    public static List<String> deletedDocumentIds() {
-        synchronized (DELETED) {
-            return new ArrayList<>(DELETED);
-        }
-    }
-
-    /** Forgets recorded deletes and removes created destinations. The process outlives one class. */
+    /** Removes created destinations. The process outlives one class. */
     public static void reset(File filesDir) {
-        synchronized (DELETED) {
-            DELETED.clear();
-        }
         File dir = new File(filesDir, "destinations");
         File[] children = dir.listFiles();
         if (children != null) {
