@@ -317,77 +317,88 @@ So what is reliably achieved is a **rate collapse** — from roughly one abort e
 seconds to one every forty-five — which a 47-second Gradle run survives and a five-minute one
 might not.
 
-**Read every number in this section knowing that the restart it credits was not happening.**
-Found 2026-09-05: `stop` and `start` are root-only, adbd was not root in any of the three copies
-of this logic, and `run-e2e.sh` sent both to `/dev/null`, so its `Must be root` was never even
-printed. What the local runs almost certainly had instead is the image restarting its own
-framework — on API 37 that happens every minute or so — and a restart landing after a successful
-`pm disable-user` brings back a SystemUI-less zygote by itself. That would produce exactly the
-rate collapse recorded above, by accident and on the image's schedule rather than the harness's,
-which also explains why the same code bought nothing at all on CI's far quieter
-`swiftshader_indirect` legs: there the logcat shows SystemUI alive for the whole run. The
-measurements above are still what was observed; what they are evidence *of* is narrower than it
-was written to be. All three copies now take root. The 180-second zero above is one measurement on a device that had been up for twelve
-minutes and had already cycled its framework several times. The harness prints the quiet-check
-delta on every run precisely so this is visible rather than assumed.
+**And that restart has never happened — which is how the disable turned out not to work either.**
+Corrected 2026-09-05; this replaces the two paragraphs above rather than qualifying them.
 
-One ordering detail cost a whole run and is now encoded in `disable_region_sampling`: by the time
-`sys.boot_completed` flips, SystemUI has **already registered**, and `pm disable-user` does not
-retract an existing registration — it only stops the package being started again. Disabling it
-and proceeding straight to the tests fails exactly as before. The harness therefore does
-`stop; start` afterwards, so the framework that comes back never starts SystemUI at all.
+`adb shell stop` and `start` are root-only, adbd is not root on a booted emulator, and all three
+copies of this logic called them without `adb root`. On CI both printed `Must be root`, between
+lines that read as if the restart had happened; `run-e2e.sh` sent them to `/dev/null`, so its
+`Must be root` was never even visible. Neither number in those logs was an observation either —
+the `pidof` loop breaks when the process is gone and otherwise falls out at its last iteration,
+and the old code printed the iteration count either way, so `system_server down after ~40 s` is
+what a stop that did nothing looks like.
 
-**And on CI that `stop; start` did nothing at all until 2026-09-05.** Both are root-only commands,
-adbd on a freshly booted emulator is not root, and the step log had been saying so on every API 37
-leg since the function was written — `Must be root`, twice, between lines that read as if the
-restart had happened:
+Adding `adb root` made the restart real, and **that is what proved the disable ineffective**.
+`api37-debug` run 34010167885, `disable_system_ui=true`:
 
 ```
+--- disable round 1 ---
+  pm attempt 1: Package com.android.systemui new state: disabled-user
   restarting the framework
-Must be root
-  system_server down after ~40 s
-Must be root
-  services back after ~5 s
-  verified: com.android.systemui is in pm list packages -d
+  adbd is running as root
+  system_server down after 2 s
+  services back after 10 s
+  NOT DISABLED after the restart -- the package state did not survive
 ```
 
-Neither number was an observation. The `pidof` loop breaks when the process is gone and otherwise
-falls out at its last iteration, and the old code printed the iteration count either way — so
-"down after ~40 s" is what a stop that did nothing looks like. The paragraph above is what makes
-this matter rather than merely untidy: without the restart the disable buys nothing, and the
-logcat confirms it directly — SystemUI is alive for the whole run, logging
-`WindowManagerShell ... app=com.android.systemui` minutes after `final state: SystemUI disabled`.
+Three rounds of that, then `final state: SystemUI STILL ENABLED`, and the leg reported
+`expected: 0, received: 0` — `Starting 0 tests`, the exact failure this function exists to
+prevent.
 
-The images are userdebug, so `adb root` is all that was missing. Measured on the local
-`android-37.0` AVD, same fingerprint as CI
-(`google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys`):
+Bisected locally on `android-37.0`, which explains the lost state and nothing else:
+
+| arm | sequence | disabled after the restart? |
+|---|---|---|
+| A | `pm disable-user`, then `stop` at once | **no** |
+| B | `pm disable-user`, wait 15 s, then `stop` | **yes** |
+
+That is PackageManager's delayed write of package restrictions: the stop kills `system_server`
+before the settings are flushed, and arm A is what CI did. **Arm B does not help either**, which
+is the measurement that matters. With the package verified `disabled-user` before *and* after a
+further clean restart:
 
 ```
-adb shell stop     -> Must be root
-adb root           -> restarting adbd as root
-adb shell whoami   -> root
-adb shell stop     -> exit 0;  adb shell pidof system_server -> (empty)
-adb shell start    -> exit 0
+  package still disabled? YES
+  processes:
+   9275  00:17 system_server
+   9695  00:14 com.android.systemui     <- started 3 s after system_server
 ```
 
-`disable_region_sampling` now takes root for the restart and drops it again with `adb unroot`
-before Gradle runs, so install, instrument and uninstall happen as the other four legs do it. Both
-waits report whether they observed what they were waiting for instead of printing their own
-exhaustion as an elapsed time.
+CI's own logcat says the same without any restart at all. In the gating leg of run 34006456986,
+`pm disable-user` is accepted at 02:28:37.9 and the package really is in `pm list packages -d` at
+02:29:33 — and SystemUI is started at 02:28:39.5 and again at 02:28:52.3, the second of which
+(pid 4275) is alive for the whole instrumentation run.
 
-**It does not touch the picker test's abort**, and it was never going to: that one is
-WindowManager inside `system_server`, not SystemUI. What it fixes is the *idle* trigger this
-section is about, which had been left running on every leg.
+**So `pm disable-user --user 0 com.android.systemui` does not stop SystemUI starting on this
+image**, with or without a framework restart, on CI or locally. The premise this section was
+built on — "the framework that comes back never starts SystemUI at all" — is false.
+
+Two things follow, pointing in opposite directions.
+
+- **The restart is removed rather than repaired**, in all three copies. It cost a leg every test
+  it had and there is nothing for it to buy. What is kept is the 45-second window with zero new
+  aborts, which was always the part doing the work: in that same run the boot aborts land at
+  02:28:18 and 02:28:43, and the wait is what puts instrumentation at 02:32:42 — after them
+  rather than inside one. The `pm disable-user` call is kept too, for a narrower reason than it
+  was written for: every green leg and every number quoted about this row was measured with it
+  applied, and changing the configuration while fixing a flake is not a trade worth making.
+- **The rate collapse recorded above is not evidence of what it says.** Both arms of that
+  comparison had SystemUI running. What it measured is a device twelve minutes into its uptime
+  against one that had just booted — a real difference, and a different claim. The quiet gate is
+  still worth having on exactly that reading.
 
 ### The two deviations, stated plainly
 
 1. **The renderer is ANGLE, not the host GPU.** Shared with nothing else in the matrix — API
    33–36 run `-gpu host` locally, and CI runs `swiftshader_indirect`.
-2. **SystemUI is disabled.** The API 37 leg does not run the same device configuration as any
-   other leg or as the Pixel. It was defensible here because nothing in this suite touched
-   system UI — Media3, FFmpeg and WorkManager tests — and because the alternative is no local
-   API 37 coverage at all. **Anything that ever does depend on system UI must not trust this
-   leg.** Something now does; see the section below.
+2. **SystemUI is asked to be disabled, and runs anyway.** This was written as the deviation that
+   mattered — "anything that ever does depend on system UI must not trust this leg" — and the
+   measurements above say the deviation does not exist: the package is marked `disabled-user` and
+   `com.android.systemui` is up for the whole leg regardless. **The correction is good news
+   rather than bad.** This row is *more* comparable to API 33–36 and to the Pixel than it has
+   been claiming, not less, and the test that depends on system UI (see the section below) was
+   never running in the exotic configuration this bullet describes. What `pm disable-user` leaves
+   behind is a package-manager flag nothing acts on.
 
 ### Something does depend on system UI now, and half of it is excluded
 
@@ -395,12 +406,13 @@ Added 2026-08-24, and the first entry on this page that is not a codec.
 
 `SafPickerRoundTripTest` drives the real system file picker and rotates the display. Both reach
 the gralloc mapper — DocumentsUI is another app's windows, and a rotation rebuilds every surface
-on screen — and **disabling SystemUI does not help**, because it removes the *idle* trigger
-(RegionSamplingThread's nav-bar luma sampling) and not this one.
+on screen — and **disabling SystemUI does not help**. Two reasons now, and only the first was
+known when this was written: it removes the *idle* trigger (RegionSamplingThread's nav-bar luma
+sampling) and not this one, and — see the section above — it does not remove SystemUI either.
 
-Measured one method per fresh emulator, `android-37.0`, `swangle_indirect`, SystemUI disabled and
-verified quiet — separately, because inferring the second from the first is the mistake this
-page's opening correction is about:
+Measured one method per fresh emulator, `android-37.0`, `swangle_indirect`, with the disable
+applied and verified quiet — separately, because inferring the second from the first is the
+mistake this page's opening correction is about:
 
 | test | result on android-37.0 | `hasReadColorBufferDma` aborts in the window |
 |---|---|---|

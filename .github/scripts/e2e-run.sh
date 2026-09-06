@@ -52,58 +52,72 @@ WEDGE_TIMEOUT=1200
 # the same shape as E2E_EXTRA_GRADLE_ARGS below. The other four E2E legs run byte-identical
 # commands with it unset.
 #
-# WHY IT RUNS HERE, BEFORE THE LOGCAT STREAM: `adb shell stop` ends the `adb logcat` started
-# below, and nothing restarts it, so a disable performed after that point would cost this leg
-# its whole diagnostic story for the part of the run that matters. Everything this function
-# counts comes from `adb logcat -d -b crash`, which is a fresh read each time and independent
-# of the stream.
+# WHY IT RUNS HERE, BEFORE THE LOGCAT STREAM: it is a 45-second wait, and the stream below is
+# meant to cover the suite rather than the wait. Everything this function counts comes from
+# `adb logcat -d -b crash`, a fresh read each time and independent of the stream. (The original
+# reason was stronger and no longer applies: `adb shell stop` would have ended the streamed
+# `adb logcat` and nothing restarts it. There is no `stop` here any more -- see below.)
 #
-# WHAT IT IS FOR: the android-37.x images abort surfaceflinger from RegionSamplingThread inside
-# their own gralloc mapper (docs/api-37-emulator-crash.md). surfaceflinger is a critical service,
-# so init SIGKILLs zygote with it and the framework restarts under the run -- Gradle then reports
+# WHAT IT IS FOR -- AND THE NAME IS NOW WRONG, WHICH IS WHY THIS PARAGRAPH IS LONG.
+# The android-37.x images abort surfaceflinger from RegionSamplingThread inside their own gralloc
+# mapper (docs/api-37-emulator-crash.md). surfaceflinger is a critical service, so init SIGKILLs
+# zygote with it and the framework restarts under the run -- Gradle then reports
 # `cmd: Can't find service: package` and `Starting 0 tests`. RegionSamplingThread exists only
-# because SystemUI registers a nav-bar luma-sampling listener, so removing the package removes
-# the whole chain. Measured cadence of those kills: 20-90 s apart, median 60-70 s, three to five
-# in a four-minute window -- fast enough that install and instrumentation start-up do not fit
-# inside one gap.
+# because SystemUI registers a nav-bar luma-sampling listener, so this was written to remove the
+# package and with it the whole chain. Measured cadence of those kills on `-gpu host`: 20-90 s
+# apart, median 60-70 s, three to five in a four-minute window.
+#
+# **THE DISABLE HALF OF THAT HAS NEVER WORKED, AND THE QUIET WINDOW IS WHAT THE LEG ACTUALLY
+# GETS.** Measured 2026-09-05, two ways that agree:
+#
+#   - On CI, in the gating leg of run 34006456986: `pm disable-user` is accepted at 02:28:37.9 and
+#     `com.android.systemui` really is in `pm list packages -d` at 02:29:33 -- and SystemUI is
+#     started anyway at 02:28:39.5 and again at 02:28:52.3, the second of which (pid 4275) is
+#     alive for the whole instrumentation run, logging `WindowManagerShell ...
+#     app=com.android.systemui` minutes after this function prints its final line.
+#   - Locally on android-37.0, with the package verified disabled before AND after a deliberate
+#     `stop; start`: `com.android.systemui` comes up 3 s after `system_server` regardless.
+#
+# So `pm disable-user --user 0 com.android.systemui` does not stop SystemUI starting on this
+# image, whatever else happens. The name `E2E_DISABLE_SYSTEM_UI` and the name of this function are
+# kept because the matrix row, both workflows and two documents refer to them, and a rename would
+# touch all of that to no benefit -- read this comment, not the name.
+#
+# WHAT IS LEFT IS LOAD-BEARING, so do not delete the function as dead weight. It is the 45-second
+# window with zero new `hasReadColorBufferDma` aborts. The boot-time aborts land close together --
+# 02:28:18 and 02:28:43 in that same run -- and the wait is what puts instrumentation (02:32:42)
+# after them rather than inside one. That is what stops a leg reporting `Starting 0 tests`, and it
+# is why the three-round retry stays.
+#
+# THE `pm disable-user` CALL STAYS TOO, for a narrower reason than it was written for: every green
+# leg and every measurement quoted anywhere about this row was taken with it applied and SystemUI
+# running. Removing it would change the configuration the numbers came from, which is not a change
+# to make while fixing a flake.
+#
+# AND THE FRAMEWORK RESTART IS GONE, having been measured to be worse than nothing. It was written
+# as `adb shell stop; adb shell start`, which are root-only; adbd is not root, so every leg printed
+# `Must be root` twice and restarted nothing. Adding `adb root` made it real, and api37-debug run
+# 34010167885 is what that looks like: `pm disable-user` reports success, the stop lands ~2 s later
+# and kills system_server before PackageManager has flushed its delayed write of package
+# restrictions, so the state is gone on the way back up -- `NOT DISABLED after the restart`, three
+# rounds, `final state: SystemUI STILL ENABLED`, and the leg then reported `expected: 0,
+# received: 0`. A 15 s pause before the stop does make the state survive (bisected locally), and it
+# still does not help, because of the two measurements above. So the restart is removed rather than
+# repaired: it cost the leg every test it had, and there is nothing for it to buy.
 #
 # NOTHING HERE TRUSTS A COMMAND'S OWN REPORT, and that is not paranoia: of four runs of an
 # earlier one-shot version, one (32646029143) reported `new state: disabled-user` and then
-# started SystemUI eight more times, with ten more aborts. `pm disable-user` can be accepted by
-# a system_server that is SIGKILLed before the state is written, and `pm disable-user` does not
-# retract SystemUI's existing region-sampling registration either -- by the time boot completes
-# it has already registered, so only a framework restart brings back a SystemUI-less
-# surfaceflinger. Hence: disable, take the framework DOWN and confirm system_server is really
-# gone (an earlier probe asked `service check` 0.3 s after `stop` and got `found` from the
-# system_server that was still exiting, so its wait was not a wait), bring it back, verify the
-# package against `pm list packages -d`, and require a 45 s window with zero new aborts.
-# Three rounds, because one is not reliable and the failure is silent.
-#
-# THE RESTART NEEDED ROOT, AND DID NOT HAVE IT UNTIL 2026-09-05. `adb shell stop` and
-# `adb shell start` are root-only, so every API 37 leg ever run printed `Must be root` twice and
-# restarted nothing -- green legs and red ones alike. SystemUI therefore stayed up for the whole
-# run, which the logcat shows directly (`WindowManagerShell ... app=com.android.systemui`, from a
-# live SystemUI pid, minutes after the "final state: SystemUI disabled" line). The paragraph above
-# says why the `pm disable-user` on its own buys nothing: it does not retract the registration.
-#
-# The images are userdebug -- `google/sdk_gphone64_x86_64/emu64xa:17/...:userdebug/dev-keys` -- so
-# `adb root` is available and was the only thing missing. Measured on the local android-37.0 AVD,
-# same image and fingerprint as CI: `stop` -> `Must be root`; `adb root` -> `whoami` says `root`;
-# `stop` -> exit 0 and `pidof system_server` empty; `start` -> exit 0.
-#
-# Root is dropped again before the suite runs. Everything Gradle does afterwards -- install,
-# instrument, uninstall -- has to be what the other four legs do, and `adb root` changes the uid
-# every later `adb shell` runs as. Both calls restart adbd, hence `wait-for-device` after each.
+# started SystemUI eight more times. So this reports what `pm list packages -d` says AND what
+# `pidof` says, side by side, rather than one line implying both.
 # ---------------------------------------------------------------------------
 count_aborts() { adb logcat -d -b crash 2> /dev/null | grep -c 'hasReadColorBufferDma'; }
 systemui_disabled() { adb shell pm list packages -d 2> /dev/null | grep -q 'com.android.systemui'; }
-adb_as_root() { adb root > /dev/null 2>&1; adb wait-for-device; }
-adb_as_shell() { adb unroot > /dev/null 2>&1; adb wait-for-device; }
+systemui_pid() { adb shell pidof com.android.systemui 2> /dev/null | tr -d '\r\n'; }
 
 disable_region_sampling() {
-  local round=1 i out down back before after
+  local round=1 i out pid before after
   while [ "$round" -le 3 ]; do
-    echo "--- SystemUI disable, round $round ---"
+    echo "--- round $round ---"
     for i in $(seq 1 10); do
       out="$(adb shell pm disable-user --user 0 com.android.systemui 2>&1 | tr -d '\r')"
       echo "  pm attempt $i: $out"
@@ -111,62 +125,20 @@ disable_region_sampling() {
       sleep 5
     done
 
-    echo "  restarting the framework"
-    adb_as_root
-    echo "  adbd is running as $(adb shell whoami 2>&1 | tr -d '\r')"
-    out="$(adb shell stop 2>&1 | tr -d '\r')"
-    [ -n "$out" ] && echo "  stop said: $out"
-    # `down` rather than reading `i` afterwards: the loop leaves `i` at 20 whether it broke on the
-    # process being gone or simply ran out, and the old version printed that as "system_server down
-    # after ~40 s" for a stop that had done nothing at all. A wait that did not observe the thing
-    # it was waiting for has to say so.
-    down=no
-    for i in $(seq 1 20); do
-      if [ -z "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ]; then
-        down=yes
-        break
-      fi
-      sleep 2
-    done
-    if [ "$down" = "yes" ]; then
-      echo "  system_server down after ~$((i * 2)) s"
-    else
-      echo "  system_server STILL RUNNING after ~$((i * 2)) s -- the stop did not take"
-    fi
-    out="$(adb shell start 2>&1 | tr -d '\r')"
-    [ -n "$out" ] && echo "  start said: $out"
-    adb_as_shell
-    # Same flag, same reason as `down` above: this loop also used to report its own exhaustion as
-    # an elapsed time, so "services back after ~150 s" and "services never came back" printed the
-    # same line.
-    back=no
-    for i in $(seq 1 30); do
-      if adb shell service check package 2> /dev/null | grep -q ': found' \
-        && adb shell service check activity 2> /dev/null | grep -q ': found' \
-        && [ -n "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ]; then
-        back=yes
-        break
-      fi
-      sleep 5
-    done
-    if [ "$back" = "yes" ]; then
-      echo "  services back after ~$((i * 5)) s"
-    else
-      echo "  services NOT back after ~$((i * 5)) s -- package, activity or system_server missing"
-    fi
-
     if systemui_disabled; then
-      echo "  verified: com.android.systemui is in pm list packages -d"
+      echo "  pm list packages -d: com.android.systemui is in it"
     else
-      echo "  NOT DISABLED after the restart -- the package state did not survive"
-      round=$((round + 1))
-      continue
+      echo "  pm list packages -d: com.android.systemui is NOT in it"
     fi
+    # Printed next to the line above precisely because the two disagree on this image, and a
+    # reader who sees only the first will believe something that is not true.
+    pid="$(systemui_pid)"
+    echo "  com.android.systemui pid: ${pid:-none} (expected: a pid -- see the header)"
 
     before="$(count_aborts)"
     sleep 45
     after="$(count_aborts)"
-    echo "  abort rate, SystemUI disabled: $((after - before)) new in 45 s (total ${after:-0})"
+    echo "  aborts: $((after - before)) new in 45 s (total ${after:-0})"
     [ "$((after - before))" -eq 0 ] && break
     echo "  still aborting after round $round"
     round=$((round + 1))
@@ -175,16 +147,16 @@ disable_region_sampling() {
   # A warning rather than an exit. If the disable did not take, the run is about to report
   # `Starting 0 tests` and fail on its own -- and it will do so with the logcat, the crash
   # buffer and the diagnostics attached, which is more useful than dying here with none of it.
-  if systemui_disabled; then
-    echo "  final state: SystemUI disabled"
+  if [ "$((after - before))" -eq 0 ]; then
+    echo "  final state: 45 s with no new aborts -- the suite starts here"
   else
-    echo "::warning::E2E api${LABEL}: SystemUI is still enabled -- expect INSTRUMENTATION_ABORTED"
+    echo "::warning::E2E api${LABEL}: still aborting after three rounds -- expect INSTRUMENTATION_ABORTED"
   fi
   return 0
 }
 
 if [ "${E2E_DISABLE_SYSTEM_UI:-}" = "1" ]; then
-  echo "::group::E2E api${LABEL} -- removing the region-sampling listener"
+  echo "::group::E2E api${LABEL} -- waiting out the boot-time gralloc aborts"
   disable_region_sampling
   echo "::endgroup::"
 fi

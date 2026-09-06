@@ -93,6 +93,17 @@ days. Read it as the current answer, and see the git history if you need the old
   #108, it cost roughly a third of the gating legs over the wave-4 landings (#190), and a marker
   is what it needed. `docs/api-37-emulator-crash.md` has the timings.
 
+  **A second thing came out of those logcats, and it withdraws a caveat rather than adding one.**
+  The API 37 row was documented as the one leg running "with SystemUI disabled and the framework
+  restarted under it", which nothing else does. Neither half was ever happening: `adb shell stop`
+  and `start` are root-only and answered `Must be root` on every leg ever run, and `pm
+  disable-user` does not stop SystemUI starting on this image anyway — measured on CI and locally,
+  with and without a real restart. **So this row's device configuration is the same as the other
+  four's, and a green here means what a green at 33–36 means.** `E2E_DISABLE_SYSTEM_UI` is kept
+  under its now-stale name because what it really buys is a 45-second window with no new gralloc
+  aborts before the suite starts, which is load-bearing; `.github/scripts/e2e-run.sh`'s header is
+  where that is written down.
+
   That job is still called `E2E API 37 Media3 hardware transcode (advisory)`, which no longer
   describes everything in it. The name is kept deliberately — it is not a required context and
   people have learned to look for it — so **read the marker, not the name**, for what it holds.
