@@ -122,10 +122,13 @@ done <<< "$changed_files"
 # The point is to predict that leg, not to audit the diff.
 shellcheck_pin="$(grep -oE 'koalaman/shellcheck@sha256:[0-9a-f]{64}' \
   .github/workflows/status_check.yml | head -1)"
+# :z is podman's SELinux relabel and is what this host needs; docker on CI does without it.
 runtime=""
+mount=":z"
 for candidate in podman docker; do
   if command -v "$candidate" >/dev/null 2>&1; then
     runtime="$candidate"
+    [ "$candidate" = "docker" ] && mount=""
     break
   fi
 done
@@ -138,14 +141,33 @@ elif [ -z "$runtime" ]; then
   say "NOT COVERED: shellcheck. Neither podman nor docker is on PATH, and there is no shellcheck
   system package on this host. CI's Static analysis leg is what answers for .sh files then."
 else
-  # :z is podman's SELinux relabel and is what this host needs; docker on CI does without it.
-  mount=":z"
-  [ "$runtime" = "docker" ] && mount=""
   say "shellcheck ($runtime, $shellcheck_pin)"
   if ! git ls-files -z '*.sh' |
     xargs -0 -r "$runtime" run --rm -v "$PWD:/mnt$mount" "docker.io/$shellcheck_pin"; then
     die "shellcheck failed. CI runs the same digest over the same files, so this is a red
   Static analysis leg waiting to happen."
+  fi
+fi
+
+# --- actionlint, the half shellcheck cannot see ---------------------------------------------
+# A good deal of this repo's bash lives in workflow `run:` blocks, which `git ls-files '*.sh'`
+# does not match at all -- so without this a workflow edit is the same hole the section above
+# just closed: green here, red on Static analysis. Pinned by digest for the reason in that
+# section, and for actionlint's own: its documented install is `curl | bash` off a moving branch,
+# which does not belong in a repo that pins every action by SHA.
+actionlint_pin="$(grep -oE 'rhysd/actionlint@sha256:[0-9a-f]{64}' \
+  .github/workflows/status_check.yml | head -1)"
+
+if [ -z "$actionlint_pin" ]; then
+  say "NOT COVERED: actionlint. Could not read the pinned digest out of
+  .github/workflows/status_check.yml -- fix this grep rather than leaving the check absent."
+elif [ -z "$runtime" ]; then
+  say "NOT COVERED: actionlint. Neither podman nor docker is on PATH; CI's Static analysis leg
+  is what answers for the workflows then."
+else
+  say "actionlint ($runtime, $actionlint_pin)"
+  if ! "$runtime" run --rm -v "$PWD:/repo$mount" -w /repo "docker.io/$actionlint_pin" -color; then
+    die "actionlint failed. CI runs the same digest over the same workflows."
   fi
 fi
 
