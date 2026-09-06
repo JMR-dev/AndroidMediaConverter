@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -27,7 +28,10 @@ import org.junit.runner.RunWith
 import org.libremediaconverter.join.JoinState
 import org.libremediaconverter.join.JoinViewModel
 import org.libremediaconverter.model.ConcatStrategy
+import org.libremediaconverter.model.ConversionRequest
 import org.libremediaconverter.model.Engine
+import org.libremediaconverter.model.OutputFormat
+import org.libremediaconverter.model.QualityTier
 import org.libremediaconverter.work.ConcatWorker
 import org.libremediaconverter.work.ConversionWorker
 import org.libremediaconverter.work.JobTags
@@ -64,6 +68,26 @@ class EchoWorker(context: Context, params: WorkerParameters) : Worker(context, p
  * path, foreground service included — into a synchronous test double, depending on class order.
  */
 @UnstableApi
+/**
+ * A [SoftwareTranscoder] that holds the worker in [WorkInfo.State.RUNNING] until released.
+ *
+ * Declared here rather than in `FakeFailures` because it is the only test that needs a job to stay
+ * live on demand, and the shape is specific to that: the others fake a *failure*, this fakes
+ * *duration*.
+ */
+private class BlockingTranscoder(private val released: CompletableDeferred<Unit>) : SoftwareTranscoder {
+    override suspend fun run(
+        request: ConversionRequest,
+        inputPath: String,
+        output: File,
+        durationMs: Long,
+        onProgress: (Int) -> Unit,
+    ) {
+        released.await()
+        output.writeBytes(ByteArray(1_024))
+    }
+}
+
 @RunWith(AndroidJUnit4::class)
 class ReattachOnLaunchTest {
 
@@ -75,7 +99,13 @@ class ReattachOnLaunchTest {
     fun clearTheQueue() = emptyQueueAndStaging()
 
     @After
-    fun leaveNothingBehind() = emptyQueueAndStaging()
+    fun leaveNothingBehind() {
+        // The suite runs without Android Test Orchestrator, so every class shares one process and
+        // a swapped seam outlives the class that set it. Only one test here swaps one, but a
+        // BlockingTranscoder left in place would hang the next class that converts anything.
+        ConversionDependencies.reset()
+        emptyQueueAndStaging()
+    }
 
     /**
      * The claim the whole fix rests on, checked against the production request builder rather
@@ -262,6 +292,69 @@ class ReattachOnLaunchTest {
     }
 
     /**
+     * Reattaching to a conversion that is **running right now**, which nothing had ever driven.
+     *
+     * This class covers a job that finished, one whose staged file is gone, an ambiguous pair, one
+     * still queued, and one the user cancelled. [Reattachment.rank] gives
+     * [WorkInfo.State.RUNNING] the **highest** rank of all — "live work outranks a finished result
+     * because a running job is holding a foreground service" — and no test on either source set
+     * ever produced one. `ReattachmentTest` exercises the ranking as a pure function over
+     * fabricated snapshots; what was missing is a ViewModel meeting a real running job.
+     *
+     * It is also the likeliest reattachment there is: the user starts a conversion, leaves, and
+     * comes back while it is still going.
+     *
+     * ## Why the engine is a fake here, and why that is not a weakening
+     *
+     * The job has to still be running when the ViewModel is built, and every real conversion in
+     * this suite finishes in about a second — racing that is what made the cancellation tests flaky
+     * enough to need retries (#224). A [SoftwareTranscoder] that blocks until released removes the
+     * race outright: the job is `RUNNING` for exactly as long as the test wants.
+     *
+     * Nothing about reattachment depends on which engine is transcoding. What is under test is the
+     * tag query, [Reattachment.choose] over live WorkManager state, and `observe` mapping it to
+     * [ConversionState.Converting] — all of which run identically whatever is doing the work.
+     *
+     * ## What this does not do, and cannot (#230)
+     *
+     * It does not kill the process. `docs/defect-audit.md` D3/D13 record that `am kill` refuses a
+     * process holding a foreground service, and there is a more basic obstacle: **instrumentation
+     * runs in the app's own process**, so any route that really killed it would take the test
+     * runner with it and there would be nothing left to assert with. A relaunch-and-observe test
+     * needs two instrumentation runs, which the runner does not provide.
+     *
+     * So process death stays device-manual, and this is the closest observable analogue: a fresh
+     * ViewModel, with no memory of the work, meeting a job that is genuinely mid-flight.
+     */
+    @Test
+    fun reattachesToAConversionThatIsStillRunning(): Unit = runBlocking {
+        val released = CompletableDeferred<Unit>()
+        ConversionDependencies.software = { BlockingTranscoder(released) }
+
+        val request = ConversionWorker.request(
+            inputUri = Uri.fromFile(stage("running_input.mp3")),
+            displayName = RUNNING_NAME,
+            sizeBytes = RUNNING_SIZE,
+            spec = OutputFormat.MP3.spec,
+            quality = QualityTier.FAST,
+        )
+        workManager.enqueue(request).result.get()
+
+        // Deterministic: the worker cannot finish until this test lets it.
+        withTimeout(TIMEOUT_MS) {
+            workManager.getWorkInfoByIdFlow(request.id).first { it?.state == WorkInfo.State.RUNNING }
+        }
+
+        val reattached = awaitConversion<ConversionState.Converting>()
+
+        assertEquals(RUNNING_NAME, reattached.input.displayName)
+        assertEquals(RUNNING_SIZE, reattached.input.sizeBytes)
+
+        released.complete(Unit)
+        workManager.cancelWorkById(request.id).result.get()
+    }
+
+    /**
      * Enqueues a job that stays [WorkInfo.State.ENQUEUED]. The delay is what holds it there: it
      * is long enough that nothing can run it during a test, and it is cancelled either way.
      */
@@ -326,5 +419,9 @@ class ReattachOnLaunchTest {
          * against WorkManager's database, so this is generous rather than tuned.
          */
         const val SETTLE_MS = 5_000L
+
+        /** Read back off the job's tags by the reattaching ViewModel, so both have to survive. */
+        const val RUNNING_NAME = "still_running.mp3"
+        const val RUNNING_SIZE = 4_242L
     }
 }
