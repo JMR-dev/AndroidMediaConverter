@@ -17,7 +17,7 @@ package org.libremediaconverter
  *
  * Removing it is the goal, and the trigger is written down: a new API 37.x system image, or an
  * ATD image for 37. Delete the annotation from the tests, and the advisory job goes empty and
- * the gating one grows by two.
+ * the gating one grows by [FAILS_ON_EMULATOR_API37_BASELINE].
  *
  * **How many tests carry it is committed below**, as [FAILS_ON_EMULATOR_API37_BASELINE], and the
  * advisory job checks the run against it. Adding or removing a marker means changing that number
@@ -52,4 +52,4 @@ annotation class FailsOnEmulatorApi37
  * `INSTRUMENTATION_ABORTED`, so the count is a number taken from a partial run. The report
  * records the truncation next to the counts for that reason.
  */
-const val FAILS_ON_EMULATOR_API37_BASELINE = 3
+const val FAILS_ON_EMULATOR_API37_BASELINE = 4

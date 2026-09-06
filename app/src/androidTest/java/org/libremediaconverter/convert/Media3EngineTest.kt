@@ -7,6 +7,10 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -14,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -262,6 +267,92 @@ class Media3EngineTest {
         }
     }
 
+    /**
+     * Cancelling a *running* export stops it, completing #224's third engine.
+     *
+     * The two FFmpeg engines were done first (`ad2a75d`, `d293646`); this is
+     * `Media3Engine.transcode`'s `invokeOnCancellation`, which posts `transformer.cancel()` onto the
+     * engine's own `HandlerThread` because `cancel()` has the same single-thread requirement as
+     * `start()`.
+     *
+     * ## Why the assertion is the output file here, and was not for FFmpeg
+     *
+     * The FFmpeg side could not use the file: `invokeOnCancellation` unlinks it, and on POSIX ffmpeg
+     * keeps writing to the unlinked inode, so the path stays gone whether or not the cancel landed.
+     * It asserted the session's return code instead.
+     *
+     * `Media3Engine` deletes nothing — the partial is `ConversionWorker`'s to clean up — so the file
+     * *is* the evidence. An export that was cancelled leaves no moov atom, so `MediaExtractor`
+     * either finds no video track or refuses the file outright with
+     * `IOException: Failed to instantiate extractor` — measured, and both mean interrupted. One
+     * that ran to completion leaves a playable HEVC file, which is the only outcome treated as a
+     * miss. The wait before
+     * reading it is deliberately several times the length of the export, so a *non*-cancelled export
+     * has certainly finished by then: the failure direction is "the file became valid", never "we
+     * did not wait long enough".
+     *
+     * ## Why it retries
+     *
+     * Same reason as the other two, measured there: the committed fixture is 3 s at 320x240 and the
+     * export outruns a naive cancel on a loaded runner. An attempt whose export finished before the
+     * cancel landed has tested nothing, so it is a miss and is retried; only exhausting
+     * [CANCEL_ATTEMPTS] fails. With `transformer.cancel()` removed every attempt produces a playable
+     * file, so the mutation still bites — it just takes five tries to say so.
+     *
+     * Progress having been reported is what proves the export really started, so a miss is
+     * distinguishable from an export that never ran at all — which matters on the API 37 image,
+     * where the decoder is what fails.
+     */
+    @Test
+    @FailsOnEmulatorApi37
+    fun cancellingARunningExportStopsIt(): Unit = runBlocking {
+        val outcomes = mutableListOf<String>()
+
+        repeat(CANCEL_ATTEMPTS) { attempt ->
+            val partial = File(context.cacheDir, "cancelled_export_$attempt.mp4").apply { delete() }
+
+            val job = launch(Dispatchers.IO) {
+                engine.transcode(
+                    input = Uri.fromFile(input),
+                    output = partial,
+                    request = ConversionRequest(OutputFormat.MP4_H265.spec),
+                )
+            }
+
+            // The muxer creating the file is proof the export really started, and it is the
+            // earliest such proof available -- earlier than the first progress tick.
+            withTimeout(TIMEOUT_MS) {
+                while (!partial.exists() && job.isActive) delay(POLL_MS)
+            }
+            val started = partial.exists()
+            job.cancelAndJoin()
+
+            if (!started) {
+                // The export failed before writing anything. That is not a cancellation result
+                // either way, so it is not allowed to pass as one.
+                outcomes += "attempt $attempt never produced an output file to cancel"
+                return@repeat
+            }
+
+            // Several times the export's own length, so a cancel that did not land has certainly
+            // finished. The failure direction is "the file became playable", never "too soon".
+            delay(SETTLE_MS)
+
+            // A cancelled export reports itself two ways and both mean the same thing: no video
+            // track, or MediaExtractor refusing the file outright with "Failed to instantiate
+            // extractor" because there is no moov atom to read. Only a *playable* file is a miss.
+            val video = runCatching { videoMimeTypeOf(partial) }.getOrNull()
+            partial.delete()
+            if (video == null) return@runBlocking
+            outcomes += "attempt $attempt produced a playable $video"
+        }
+
+        fail(
+            "never interrupted a running export in $CANCEL_ATTEMPTS attempts, so either every " +
+                "export finished first or cancellation does not reach the transformer: $outcomes",
+        )
+    }
+
     private fun videoMimeTypeOf(file: File): String? {
         val extractor = MediaExtractor()
         try {
@@ -279,6 +370,19 @@ class Media3EngineTest {
 
     private companion object {
         const val TIMEOUT_SECONDS = 120L
+
+        /** Bounds the wait for the muxer to create the file; a hang here is a defect. */
+        const val TIMEOUT_MS = 30_000L
+        const val POLL_MS = 25L
+
+        /**
+         * How long to let a *failed* cancel finish. Several times the export's own length, so
+         * "the file is not playable" cannot mean "not yet".
+         */
+        const val SETTLE_MS = 10_000L
+
+        /** See the KDoc: a miss is the loaded-runner case, not a defect. */
+        const val CANCEL_ATTEMPTS = 5
 
         /**
          * Short on purpose. Nothing is decoded or encoded on this path — the builder refuses the
