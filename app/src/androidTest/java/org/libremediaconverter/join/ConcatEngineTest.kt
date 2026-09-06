@@ -18,6 +18,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -83,6 +84,13 @@ class ConcatEngineTest {
      * the conversion side established the deeper reason: the committed clips are 2 s at 320x240 and
      * the encode outruns a callback-triggered cancel.
      *
+     * **And the attempt is retried**, for the reason the conversion side measured the hard way: on
+     * a loaded runner the thread that observed `RUNNING` can be descheduled long enough for a short
+     * encode to finish before it calls `cancel`, which failed two CI legs there. An attempt whose
+     * session finished first has tested nothing, so it is a miss rather than a failure; only
+     * exhausting [CANCEL_ATTEMPTS] fails, and with `FFmpegKit.cancel` removed every attempt misses,
+     * so the mutation still bites.
+     *
      * The inputs are deliberately the **mismatched** pair, so [ConcatStrategy.REENCODE] is chosen.
      * A stream copy of two short clips is close to instantaneous and would leave nothing to
      * interrupt; re-encoding is the case where a user would actually reach for Cancel.
@@ -92,30 +100,40 @@ class ConcatEngineTest {
      */
     @Test
     fun cancellingARunningJoinCancelsTheNativeSession(): Unit = runBlocking {
-        val before = FFmpegKit.listSessions().map { it.getSessionId() }.toSet()
-        val out = output("cancelled_join.mp4")
+        val outcomes = mutableListOf<String>()
 
-        val job = launch(Dispatchers.IO) {
-            engine.join(listOf(Uri.fromFile(clipA), Uri.fromFile(clipMismatched)), out, ConcatWorker.DEFAULT_FORMAT)
-        }
+        repeat(CANCEL_ATTEMPTS) { attempt ->
+            val before = FFmpegKit.listSessions().map { it.getSessionId() }.toSet()
+            val out = output("cancelled_join_$attempt.mp4")
 
-        val ours = withTimeout(TIMEOUT_MS) {
-            var found: FFmpegSession? = null
-            while (found?.getState() != SessionState.RUNNING) {
-                found = FFmpegKit.listSessions().firstOrNull { it.getSessionId() !in before }
-                if (found?.getState() != SessionState.RUNNING) delay(POLL_MS)
+            val job = launch(Dispatchers.IO) {
+                engine.join(
+                    listOf(Uri.fromFile(clipA), Uri.fromFile(clipMismatched)),
+                    out,
+                    ConcatWorker.DEFAULT_FORMAT,
+                )
             }
-            found
-        }
-        job.cancelAndJoin()
 
-        withTimeout(TIMEOUT_MS) {
-            while (ours.getState() == SessionState.RUNNING) delay(POLL_MS)
+            val ours = withTimeout(TIMEOUT_MS) {
+                var found: FFmpegSession? = null
+                while (found == null) {
+                    found = FFmpegKit.listSessions().firstOrNull { it.getSessionId() !in before }
+                    if (found == null) delay(POLL_MS)
+                }
+                found
+            }
+            job.cancelAndJoin()
+            withTimeout(TIMEOUT_MS) {
+                while (ours.getState() == SessionState.RUNNING) delay(POLL_MS)
+            }
+
+            if (ReturnCode.isCancel(ours.getReturnCode())) return@runBlocking
+            outcomes += "state=${ours.getState()} rc=${ours.getReturnCode()}"
         }
 
-        assertTrue(
-            "the native join session was not cancelled: state=${ours.getState()} rc=${ours.getReturnCode()}",
-            ReturnCode.isCancel(ours.getReturnCode()),
+        fail(
+            "never interrupted a running join in $CANCEL_ATTEMPTS attempts, so either every " +
+                "encode finished first or cancellation does not reach it: $outcomes",
         )
     }
 
@@ -254,5 +272,8 @@ class ConcatEngineTest {
         /** Generous: it bounds a hang, and both waits here normally settle in well under a second. */
         const val TIMEOUT_MS = 30_000L
         const val POLL_MS = 50L
+
+        /** See the conversion side: a miss is the loaded-runner case, not a defect. */
+        const val CANCEL_ATTEMPTS = 5
     }
 }
