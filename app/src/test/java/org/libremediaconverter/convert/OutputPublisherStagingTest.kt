@@ -122,24 +122,25 @@ class OutputPublisherStagingTest {
 
     /**
      * Makes `cacheDir/conversions` a regular file, which is the whole precondition of the test
-     * above -- and does it in a loop, because a single delete-then-write loses a race that CI
-     * caught and this machine does not reproduce.
+     * above -- and does it in a loop, because a single delete-then-write once lost a race that CI
+     * caught and this machine did not reproduce.
      *
-     * `LibreMediaConverterApp.onCreate` ends with
-     * `appScope.launch { OutputPublisher(...).sweepStaging() }` on `Dispatchers.IO`, and
-     * `sweepStaging` reads `stagingDir`, whose getter calls `mkdirs()`. Robolectric instantiates
-     * the application for every test that asks for one, so that background `mkdirs()` is in flight
-     * across the whole suite, on a thread the paused main looper does not control. Between deleting
-     * this path and writing it there is a window where the path does not exist and that `mkdirs()`
-     * can win, which is `FileNotFoundException: ... (Is a directory)` out of `writeBytes` -- run
-     * 33069641674 on #149, once, against 468 tests that pass here.
+     * **That race is closed at the source as of #159, and the loop is kept anyway.**
+     * `LibreMediaConverterApp.onCreate` launched its staging sweep on `Dispatchers.IO`, and
+     * `sweepStaging` reads `stagingDir`, whose getter calls `mkdirs()`. Robolectric builds an
+     * application for every test class that asks for one, so that background `mkdirs()` was in
+     * flight across the whole suite, on a thread the paused main looper does not control. Between
+     * deleting this path and writing it there is a window where the path does not exist and that
+     * `mkdirs()` could win -- `FileNotFoundException: ... (Is a directory)` out of `writeBytes`,
+     * run 33069641674 on #149, once, against 468 tests that passed here. The JVM suite now runs
+     * `TestLibreMediaConverterApp`, whose sweep finishes before `onCreate()` returns, so nothing is
+     * sweeping while a test body runs.
      *
-     * Retrying closes it rather than narrowing it, because the race is not symmetric: `mkdirs()`
-     * fails on an existing regular file, so the invariant only has to survive being *established*.
-     * Once a write lands, nothing in the suite can turn this back into a directory.
-     *
-     * The wider problem -- application-scope IO work racing every Robolectric test that shares
-     * `cacheDir` -- is #159, and is deliberately not fixed here.
+     * The loop stays because it is what would catch that substitution being undone. Without it the
+     * regression returns as this one class failing rarely on CI -- the exact shape that took #159
+     * from a single run on #149 to a wave-4 flake before anyone chased it. Retrying closes the
+     * window rather than narrowing it, because the race is not symmetric: `mkdirs()` fails on an
+     * existing regular file, so the invariant only has to survive being *established*.
      */
     private fun stagingPathAsRegularFile(): File {
         val stagingPath = File(cacheDir, "conversions")

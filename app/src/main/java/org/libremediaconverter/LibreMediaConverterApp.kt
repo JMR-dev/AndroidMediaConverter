@@ -3,6 +3,7 @@ package org.libremediaconverter
 import android.app.Application
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.libremediaconverter.convert.OutputPublisher
@@ -17,14 +18,36 @@ import org.libremediaconverter.convert.OutputPublisher
  * ever becomes a `Converted` state, or a `reset()`'s delete is cancelled along with the
  * Activity. Process start is the one moment those leftovers are reliably observable.
  */
-class LibreMediaConverterApp : Application() {
+open class LibreMediaConverterApp : Application() {
 
     /**
      * Deliberately process-lifetime and never cancelled: the work it carries is a single
      * short task that should outlive nothing in particular and be interrupted by nothing.
      * A `SupervisorJob` so a failure here could never take a sibling down with it.
+     *
+     * **`protected open` for #159.** Robolectric builds an `Application` for every test that asks
+     * for one, so on the JVM this is not one background sweep but one *per test* — all of them on
+     * `Dispatchers.IO`, all touching the same `cacheDir`, none of them joined by anything. That is
+     * a race against any test asserting about a file under `conversions/`, and it grew with the
+     * suite: wave 4 added ten Robolectric classes and took it from CI-only to roughly one local run
+     * in six. The JVM suite substitutes a scope that runs the sweep inline — see
+     * `app/src/test/resources/robolectric.properties` and `TestLibreMediaConverterApp`.
+     *
+     * A constructor parameter would be the ordinary way to inject this and is not available: the
+     * framework builds this class, so the seam has to be a member.
      */
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    protected open val sweepScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * The sweep [onCreate] last started, so a caller that needs it finished can wait for it.
+     *
+     * Nothing in production reads this — process start does not wait for its own housekeeping. It
+     * exists because the alternative for a test is a timed poll, and a poll cannot tell "the sweep
+     * has not run yet" from "the sweep ran and did nothing".
+     */
+    @Volatile
+    var startupSweep: Job? = null
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -53,6 +76,6 @@ class LibreMediaConverterApp : Application() {
         //
         // sweepStaging() also re-reads each timestamp immediately before deleting, which
         // closes the window between listing the directory and acting on the listing.
-        appScope.launch { OutputPublisher(this@LibreMediaConverterApp).sweepStaging() }
+        startupSweep = sweepScope.launch { OutputPublisher(this@LibreMediaConverterApp).sweepStaging() }
     }
 }
