@@ -310,6 +310,31 @@ install for code that can never run — and on API 37 the full APK does not fit 
   #218 and carries the unfixed scope. **Prefer a mutation that must go red to a repetition count**
   when a fix is for something intermittent.
 
+  **Every number above is `testDebugUnitTest` only, and on 2026-09-05 the instrumented suite got its
+  first read for that reason** — `docs/e2e-read-findings.md`, entries **E1-E6**, tickets
+  **#223-#230**. Four waves had been steered by a figure that **cannot see `app/src/androidTest` at
+  all**, so nothing had ever asked what those 60 device tests pin, only that they were green.
+
+  **It found one test that passes while testing nothing, and it is the one that matters most.**
+  `HardwareFallbackTest` is the only automated check of the hardware→software fallback against a
+  *real* codec failure, and on run `34004304566` the API 33, 34, 35 and 37 legs each log
+  `Routing sample_h264_444.mp4 -> ... via FFMPEG (NO_HARDWARE_ENCODER)` (API 36's logcat artifact on
+  that run is truncated, so it is unread rather than different): emulators expose no
+  hardware encoder, so the job never reaches Media3 and the `catch` it exists to prove is never
+  entered. Its two assertions — succeeded, output non-empty — are true anyway, and it finishes in
+  448 ms. **Deleting that `catch` reddens nothing on any leg** (#223).
+
+  Two things generalise from it. **A test can assert and still not reach**, which no coverage
+  number and no "does it assert something" review would catch — the filter that works is *does this
+  test's premise hold on the machine that runs it?*. And the codebase **already knew**: the sibling
+  `ForcedFailureTest` pins `DeviceCodecs.PERMISSIVE` against exactly this hazard and writes out why,
+  as does `ConversionWorkerTest`. The difference is that their assertions are about the *path*, so
+  without the pin they would fail loudly; `HardwareFallbackTest`'s are about the *output*, so it
+  passes quietly. **Prefer asserting the path over asserting the artefact** where the two differ.
+
+  The read was a triage, not a test push, and five of its six findings are prose rather than code —
+  the suite itself is in good shape. What had drifted is its self-description.
+
 - **Testable code is not done until it is tested.** If a piece is unit testable, it gets unit
   tests before it counts as done. If it is e2e testable, it gets e2e tests. Both clauses apply —
   a change that is both needs both.

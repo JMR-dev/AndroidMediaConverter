@@ -1,0 +1,327 @@
+# E2E-read findings
+
+**Status:** six findings, none fixed, none urgent — **plus one confirmed vacuous test, which is a
+ticket rather than an entry here** (see [Not covered here](#not-covered-here)). `E1`–`E6` came from
+the 2026-09-05 read of the instrumented suite. Every entry here is a *test-suite* observation —
+something a new test would not fix, because the test already exists and the problem is what it
+claims rather than what it runs.
+**Scope:** what reading all 60 instrumented tests turned up that writing a 61st would not fix.
+**Last verified:** `main` at `4b02294`, 2026-09-05. **60 `@Test` methods in 12 classes**, three
+carrying `@FailsOnEmulatorApi37`, gating API 37 leg 57.
+
+## Why this document exists, and why it is separate from the other two
+
+`docs/coverage-read-findings.md` (`F1`–`F10`) came from reading a **JaCoCo report**, and JaCoCo
+measures `testDebugUnitTest` only. So four waves of coverage work have been shaped by a number that
+**cannot see `app/src/androidTest` at all**. The instrumented suite has never had the equivalent
+read: nothing has asked what those 60 tests actually pin, only that they are green.
+
+That is the gap this read is in. It is a **triage, not a test push** — the same shape as wave 4's
+read, which "moved no number at all, and that is its result".
+
+`docs/defect-audit.md` (`D1`–`D16`) is the record of things *wrong at runtime*. Nothing here is
+wrong at runtime. These are tests whose names, KDoc or reputation overstate what they execute.
+
+Entry ids are `E1`–`E6` so they cannot be confused with `F1`–`F10` or `D1`–`D16`.
+
+## How to read the confidence labels
+
+Same vocabulary as the other two documents, deliberately:
+
+- **Confirmed by inspection** — the control flow is fully readable and the finding follows from it.
+- **Confirmed by measurement** — observed in a CI artifact, with the run id recorded.
+- **No action** — recorded because it looks like a finding and is not.
+
+## The method, and the one filter that found everything
+
+A coverage number is useless here by construction, so the read used a different question, applied
+to every one of the 60 tests:
+
+> **If the behaviour this test is named for stopped working, would it go red?**
+
+Three answers, and only the third is a gap:
+
+- **yes** — the test bites. Most of the suite.
+- **no, and that is deliberate and written down** — `RealMediaBenchmark` asserts nothing on purpose
+  (E2); `transcodesH264ToH265AndReportsProgress` declines to assert progress for a stated reason
+  (E3). These are entries here, not tickets.
+- **no, and nothing says so** — the gap. One test, and it is the most important one in the suite.
+
+**The reusable part is the second filter**, because "does it assert something?" would have cleared
+the vacuous test — it asserts two things. What it does not do is *reach the code it names*:
+
+> **Does the test's own premise hold on the machine that runs it?**
+
+`HardwareFallbackTest` asserts `SUCCEEDED` and a non-empty output, and both are true of a
+conversion that never went near the path it exists to prove (**#223**). See
+[Not covered here](#not-covered-here); it is filed rather than recorded here because a test fixes it.
+
+---
+
+## E1 — `RemuxTest`'s class KDoc argues for engine assertions three of its tests do not make, and they are right not to
+
+**Severity: low · Confirmed by inspection · the KDoc is what is wrong, not the tests**
+
+```
+app/src/androidTest/java/org/libremediaconverter/convert/RemuxTest.kt:31-42
+```
+
+The class KDoc is headed **"Why these assert the engine, not just the file"** and makes a specific
+argument:
+
+> A remux routed to FFmpeg produces a perfectly correct file — `-c copy` moves the same samples
+> into the same container. So an output-only assertion passes whether the hardware transmux path
+> ran or never executed at all […] which makes "silently always FFmpeg" the most likely way for
+> this feature to regress.
+
+Five of its seven tests run a conversion. **Three assert no engine at all:**
+
+| test | output container | asserts engine? |
+|---|---|---|
+| `mkvToMp4RemuxesOnHardware` | MP4 | **yes** — `MEDIA3` |
+| `mp4ToMkvRemuxesOnFFmpeg` | MKV | **yes** — `FFMPEG` |
+| `webmToMkvKeepsVp9WithoutReencoding` | MKV | no |
+| `audioOnlySourceRemuxesIntoMka` | MKV (`.mka`) | no |
+| `mp4ToMpegTsAndAviProduceTheirOwnContainers` | MPEG-TS, then AVI | **TS only**; the AVI half does not |
+
+### Why this is not a gap
+
+`ConversionRouter.MEDIA3_CONTAINERS = setOf(Container.MP4)` (`ConversionRouter.kt:37`), and every
+one of the three produces MKV or AVI. **They can only ever be FFmpeg**, so the regression the KDoc
+names — "silently always FFmpeg" — is not a thing that can happen to them. The two tests where the
+hardware path is genuinely at risk are exactly the two that assert it.
+
+An engine assertion on the other three would be near-tautological given today's router. It would
+catch one thing: somebody adding MKV or AVI to `MEDIA3_CONTAINERS` without a muxer to match — which
+is what `Media3MuxersTest` is for, on the JVM, where it does not need a device.
+
+### Why it is recorded rather than dropped
+
+**This was the strongest-looking candidate of the whole read and it dissolved on tracing**, which
+is the same shape as `F5` in the coverage document (filed as a test gap, and only stopped being one
+when someone went looking for its callers). Recorded so the next read does not re-file it.
+
+**The fix is one line of KDoc**, not three tests: the class asserts the engine *where the engine is
+in doubt*, which is a better rule than the one it currently states.
+
+---
+
+## E2 — three of the 60 instrumented tests assert nothing, and two of them never run
+
+**Severity: n/a · No action — deliberate, documented, and load-bearing as documentation**
+
+```
+app/src/androidTest/java/org/libremediaconverter/bench/RealMediaBenchmark.kt:25-53
+```
+
+`reportDeviceEncoderCapabilities` logs and asserts nothing. `hardwareVersusSoftwareOnRealVideo` and
+`av1InputRoutesAccordingToDeviceDecodeSupport` are `assumeTrue`-guarded on media that is **not
+committed** and must be staged by hand into the app's internal `filesDir`, so they skip in every
+automated run — they are the "2 skipped" every green leg reports, and `docs/local-emulator.md:305`
+says so.
+
+The class KDoc is unambiguous: *"This is a benchmark, not part of the automated suite […] Not a
+correctness test — the assertions are deliberately loose."*
+
+**No action.** Recorded for one reason: **the suite's headline number is 60, and three of those 60
+are not tests.** Any future statement of the form "60 instrumented tests cover X" is off by three,
+and two of the three have never executed on CI at all.
+
+**It is the opposite of E-nothing, though** — `reportDeviceEncoderCapabilities` runs on every leg
+and logs `BENCH can-encode:`, and **that log line is what confirmed the vacuous test this read
+found** (**#223**). An assertion-free test that prints the machine's capabilities turned out to be
+the only oracle in the suite. See [Not covered here](#not-covered-here).
+
+---
+
+## E3 — `transcodesH264ToH265AndReportsProgress` does not assert that progress was reported
+
+**Severity: low · No action on the test; the name is the inaccurate part**
+
+```
+app/src/androidTest/java/org/libremediaconverter/convert/Media3EngineTest.kt:73, :90-93
+```
+
+```kotlin
+// Deliberately NOT asserting that progress fired. Polling is on a 250 ms tick,
+// and a 3 s 320x240 clip can finish inside one tick on fast hardware, which
+// would make the assertion fail intermittently for no real defect.
+seen.forEach { assertTrue("progress out of range: $it", it in 0..100) }
+```
+
+`seen` is empty-safe: `forEach` on an empty list asserts nothing, so replacing `onProgress` with a
+no-op reddens nothing here. The reasoning is sound and the alternative really is a flaky test.
+
+**No action on the body.** The name says `AndReportsProgress` and the body says it does not check
+that, which is the `probeForConcat` shape from `CLAUDE.md` — *a passing test with a wrong
+explanation is its own failure mode* — in its mildest form, since here the KDoc immediately corrects
+the name.
+
+**Contrast the FFmpeg side, which is a real gap and is filed as #229**: `FFmpegEngine`'s percentage
+arithmetic is executed by every FFmpeg test and observed by none, because every call site omits
+`onProgress` entirely. Media3's is unasserted; FFmpeg's is unobserved. Only the second is a ticket.
+
+---
+
+## E4 — the marker's KDoc says removing it grows the gating leg by two; three tests carry it
+
+**Severity: low · Confirmed by inspection · one line**
+
+```
+app/src/androidTest/java/org/libremediaconverter/FailsOnEmulatorApi37.kt:20
+```
+
+> Delete the annotation from the tests, and the advisory job goes empty and the gating one grows by
+> **two**.
+
+Three tests carry it — `Media3EngineTest:72`, `Media3EngineTest:135`, `SafPickerRoundTripTest:320` —
+and `FAILS_ON_EMULATOR_API37_BASELINE = 3` eleven lines further down the same file, where the count
+is machine-checked by `.github/scripts/e2e-report-shape.sh`.
+
+The third marker was added when the SAF rotation test was excluded; the sentence was not updated
+with it. **Everything that is checked is consistent at three**; only the prose says two, which is
+exactly why it drifted — and a good argument for the baseline const being a const.
+
+---
+
+## E5 — `coverage-read-findings.md`'s F7 calls covered code uncovered
+
+**Severity: low · Confirmed by inspection · half of F7 is stale**
+
+F7 says `probeWithExtractor`'s catch (`MediaProbe.kt:180-182`) is unreachable on Robolectric and
+"stays device-only", measured across four URI shapes. **The unreachability claim is correct and
+stands.** The implication readers take from it — that nothing exercises it — does not:
+
+```
+app/src/androidTest/java/org/libremediaconverter/convert/RemuxTest.kt:111
+```
+
+`probeDistinguishesAudioFromImagesFromRubbish` feeds it a file of random bytes and asserts
+`InputKind.UNPARSEABLE`, on a device, on every gating leg.
+
+**"Device-only" holds; "uncovered" does not** — and the difference matters, because F7 is one of the
+six entries that document calls "no action", on the grounds that a test would not help. A test
+already exists. The entry should say so.
+
+**This is the failure mode the split between the two documents was meant to prevent**, and it caught
+this repo out: a JaCoCo-derived document cannot see `androidTest`, so it will keep re-deriving
+"uncovered" for anything the instrumented suite covers. That is a structural reason for this
+document to exist, not a one-off correction.
+
+---
+
+## E6 — the suite's one device-capability assertion derives its expectation from the call it is testing
+
+**Severity: low · Confirmed by inspection · no independent oracle exists**
+
+```
+app/src/androidTest/java/org/libremediaconverter/work/ConversionWorkerTest.kt:151-152
+```
+
+```kotlin
+val hasHardwareHevc = AndroidDeviceCodecs.get().canEncode(VideoCodec.H265)
+```
+
+and then the expectation is `if (hasHardwareHevc) MEDIA3 else FFMPEG`. The test asks
+`AndroidDeviceCodecs` what to expect and then checks that the router agreed with
+`AndroidDeviceCodecs`. **If the whole enumeration returned empty, this would still pass** — and
+empty is precisely what the `runCatching` fallback returns (the reason `#194` was worth cutting;
+it logs "assuming permissive" while making `canEncode` answer *no* for everything).
+
+Its KDoc defends the choice, and the defence is good:
+
+> Asserting MEDIA3 unconditionally tests the test machine, not the router.
+
+That is true, and there is no third source of truth on a device: `MediaCodecList` is what
+`AndroidDeviceCodecs` reads, so any oracle built from it is the same oracle.
+
+**No action, but read it with #223.** It is the same missing oracle that makes the
+vacuous-test fix a judgement call rather than a one-liner — you cannot assert "this device has
+hardware HEVC" from inside the suite without asking the class under test. The honest options are a
+visible skip or a red test, and that decision is the ticket's.
+
+---
+
+## Summary
+
+| ID | Finding | Severity | Evidence | Action |
+|---|---|---|---|---|
+| E1 | `RemuxTest`'s KDoc claims engine assertions three of its tests correctly omit | low | confirmed by inspection; traced through `MEDIA3_CONTAINERS` | **one line of KDoc** — the tests are right |
+| E2 | Three of the 60 instrumented tests assert nothing; two never run | n/a | confirmed by inspection; `docs/local-emulator.md:305` | **no action** — deliberate; but 60 ≠ 60 |
+| E3 | `…AndReportsProgress` does not assert progress fired | low | confirmed by inspection; reason inline | **no action** — the name overstates, the KDoc corrects it |
+| E4 | The API 37 marker's KDoc says "two"; three tests carry it | low | confirmed by inspection; baseline const says 3 | **fix the sentence** |
+| E5 | `coverage-read-findings.md` F7's "uncovered" half is stale | low | confirmed by inspection; `RemuxTest.kt:111` drives it | **amend F7** — "device-only" stands, "uncovered" does not |
+| E6 | The device-capability assertion asks the class under test what to expect | low | confirmed by inspection; no third oracle exists on a device | **no action** — read with **#223** |
+
+**Five of the six are prose, not code**, and that is the shape of this read. The instrumented suite
+is in good condition: 57 of its 60 tests bite, the fixtures are committed with their generation
+recipes, and the one class that asserts nothing says so in its first line. What this read found is
+that **the suite's self-description has drifted from the suite** in five small places and one large
+one.
+
+**The large one is not in this table**, because a test fixes it: **#223**.
+
+## Not covered here
+
+**The vacuous test.** `HardwareFallbackTest.aFileMedia3CannotDecodeStillConvertsViaFfmpeg` passes on
+every CI leg without ever entering the fallback it exists to prove. It is **#223**, not an entry
+here, because a test fixes it — and it is the reason this read happened rather than an aside from it.
+
+Measured, not inferred, on run **`34004304566`** (all legs green), from each leg's own
+`e2e-diagnostics-api*` logcat:
+
+```
+I/AndroidDeviceCodecs: Hardware video encoders: []
+I/RealMediaBenchmark: BENCH can-encode: COPY=true, H264=false, H265=false, VP9=false, VP8=false, AV1=false
+I/ConversionWorker: Routing sample_h264_444.mp4 -> OutputSpec(container=MP4, videoCodec=H265,
+                    audioCodec=AAC) via FFMPEG (NO_HARDWARE_ENCODER)
+```
+
+Identical on **API 33, 34, 35 and 37**. (API 36's logcat artifact on that run is truncated to 838 KB
+and carries no test output at all, so it is unread rather than different.) The job is routed
+**straight to FFmpeg before Media3 is attempted**, the `catch` in `runMedia3OrFallBack` is never
+entered, and the test's two assertions — `SUCCEEDED`, output non-empty — are true anyway. It ran in
+448 ms.
+
+**The repository already knew.** `ForcedFailureTest.hardwareFailureFallsBackToSoftware`, in the same
+package, pins `ConversionDependencies.deviceCodecs = { DeviceCodecs.PERMISSIVE }` and says why:
+
+> most emulators expose no hardware video encoder at all -- so the router would legitimately send
+> the job straight to FFmpeg and the hardware path would never be attempted. Without this the test
+> passes on a Pixel and fails on every emulator, which says nothing about the code under test.
+
+`ConversionWorkerTest.routesAFastMp4JobByDeviceCapability` records the same fact a third time. The
+knowledge is in two sibling files; `HardwareFallbackTest` is the one that walked into it — and
+because its assertions are about the *output* rather than the *path*, it passes where
+`ForcedFailureTest` would have failed. **That asymmetry is why nobody noticed.**
+
+**State it precisely.** The fallback *wiring* is covered on every leg by `ForcedFailureTest`, with
+fakes. What has never run on any emulator is a fallback triggered by a **real** mid-export codec
+failure — which is the case `HardwareFallbackTest` exists for, and the only reason
+`sample_h264_444.mp4` is committed at all. That fixture, generated with x264 because Fedora's
+ffmpeg ships openh264 and cannot produce High 4:4:4, does nothing on any CI leg today.
+
+The fix is not one assertion. `KEY_ENGINE_USED` is `FFMPEG` **whether the fallback fired or the
+router went straight there** — asserting it changes nothing. The vacuity guard is two facts
+together: the router chose `MEDIA3` for this request on this device, *and* the worker reported
+`FFMPEG`. Whether to reach that with `assumeTrue` (a visible skip on emulators, and the "2 skipped"
+becomes 3) or with an assertion (red on emulators, announcing it cannot test what it claims) is a
+decision, not a detail — see **E6** for why no third option exists — and **#223** leaves it open.
+
+**The other e2e gaps this read found are tickets too**, and are not repeated here:
+
+| # | Gap |
+|---|---|
+| **#223** | `HardwareFallbackTest` never attempts the hardware path on any emulator leg |
+| **#224** | Cancelling a *running* native session, in any of the three engines |
+| **#225** | No `content://` input has reached a *successful* conversion — the ffkitsaf bridge |
+| **#226** | `OutputPublisher.publish` against a real `DocumentsProvider`, and the SAF premise it rests on |
+| **#227** | The notification's Cancel action has never been fired |
+| **#228** | `encodesFlacLosslessAudio` and `encodesOpus` pass on any non-empty file |
+| **#229** | FFmpeg's progress percentage is computed everywhere and asserted nowhere |
+| **#230** | *(spike)* whether a running conversion's process can be killed under instrumentation |
+
+**Nothing here was filed as a coverage delta.** Each names the mutation that has to go red, which is
+the acceptance criterion wave 4 established and which caught two vacuous tests in that wave before
+they shipped. #223 is the one that shows why the criterion matters: it has two passing assertions and
+still tests nothing.
