@@ -492,6 +492,18 @@ input entirely, so the picker's process can be removed from a task no key press 
 `pickTheFixture`'s whole-picker retry — which exists for exactly this — becomes reachable again.
 That is a fix to the test on every level, not to API 37.
 
+**It was made to bite before it was believed.** On a local API 36 emulator, with the walk cut short
+so the picker is left open and in front and with `device.pressBack()` removed, so that nothing but
+the force-stop can close it:
+
+| | result |
+|---|---|
+| with `forceStopThePicker()` | **passes** — `ActivityManager: Force stopping com.google.android.documentsui ... from pid 5334`, `Killing 5269:com.google.android.documentsui (adj 0)`, a second `PickActivity` opens, the retry completes the pick |
+| with the one call removed | **fails** — `the system picker would not close: after 4 back presses ... com.google.android.documentsui is in front`, which is the API 37 failure verbatim |
+
+The unmutated class passes on that emulator either way, which is the point of running the mutation
+at all: the recovery path is unreachable on a healthy device, so a green suite says nothing about it.
+
 #### The correction that produced that table
 
 **The first version of this section said both tests failed, and put the marker on the class.** The

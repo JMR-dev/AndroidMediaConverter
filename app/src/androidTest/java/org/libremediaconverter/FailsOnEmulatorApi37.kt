@@ -54,10 +54,13 @@ annotation class FailsOnEmulatorApi37
  * **The fourth carrier is the one to read that sentence carefully for.**
  * `pickingAFileThroughTheSystemPickerFillsInTheFileCard` was marked on 2026-09-05 for aborting
  * `system_server` rather than for failing (#108), and on the gating leg it passed two runs of
- * four. On the advisory leg it runs after the rotation test has already taken the framework down,
- * which is why the count still holds there — measured, not assumed, and the measurement is the
- * reason this line did not have to become two numbers. If it ever starts reporting three failures
- * out of four, read that as this test having got lucky rather than as an image that improved.
+ * four. The count still holds on the advisory leg, and that was **measured rather than assumed**:
+ * `api37-debug.yml` run 34008889182, dispatched with this annotation as its filter, reports
+ * `expected: 4, received: 4, failed: 4` (and `completed cleanly: no`, which is this job's normal).
+ * It fails there because it runs alongside the rotation test, which takes the framework down first
+ * — so the reason this line did not have to become two numbers is a property of the advisory leg,
+ * not of the test. If it ever reports three failures out of four, read that as this test having
+ * got lucky rather than as an image that improved.
  *
  * So: adding or removing a [FailsOnEmulatorApi37] means changing this number, in this file, in
  * the same diff. The report says so on the run itself if you forget — it prints the tree's own
