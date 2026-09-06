@@ -139,6 +139,58 @@ class FFmpegEngineTest {
         assertEquals("OggS", magic)
     }
 
+    /**
+     * The percentage itself, which every other test in this class computes and none of them reads.
+     *
+     * `FFmpegEngine` derives progress as `stats.time / durationMs * 100`, and the statistics
+     * callback runs on every conversion here — but every call site omits `onProgress`, so until
+     * this test nothing on any source set had ever looked at the number (#229). #196 covered the
+     * *worker's* progress lambda, and did it with a fake engine that reports whatever the test
+     * tells it to; `ProgressNotificationTest` covers throttling the same way. The arithmetic was
+     * the one part with no reader.
+     *
+     * ## Why the duration is deliberately wrong
+     *
+     * `sample_h264.mp4` is exactly 3.000 s, and this passes **30 s** as the duration. So the
+     * conversion still encodes the whole clip, `stats.time` still climbs to about 3000 ms, and the
+     * reported percentage tops out around **10** rather than 100.
+     *
+     * That is what makes the assertion bite. A range check alone is worthless here: replacing
+     * `percent` with a constant `0` satisfies "every value is in 0..100" and "the values never go
+     * backwards", and so does a list of `[0, 100]`. Pinning the *band* rejects every constant, and
+     * — because the band is a tenth of the way up — it also rejects an implementation that ignores
+     * `durationMs`, which would report ~100 for the same run.
+     *
+     * The bound is deliberately loose (5..25 for an expected 10). The last statistics callback can
+     * land slightly before the final frame, so the peak is "about 3000 ms of a claimed 30 000",
+     * not exactly it.
+     */
+    @Test
+    fun progressIsReportedAsAFractionOfTheDurationItWasGiven() {
+        val seen = mutableListOf<Int>()
+        val out = outputFor("out_progress.mp4")
+        runBlocking {
+            engine.run(
+                request = ConversionRequest(spec = OutputFormat.MP4_H264.spec, quality = QualityTier.BEST),
+                inputPath = input.absolutePath,
+                output = out,
+                // Ten times the fixture's real 3 s. See the KDoc.
+                durationMs = 30_000,
+                onProgress = { percent -> seen += percent },
+            )
+        }
+
+        assertTrue("the statistics callback never reported progress", seen.isNotEmpty())
+        assertTrue("progress out of range: $seen", seen.all { it in 0..100 })
+        assertEquals("progress went backwards: $seen", seen.sorted(), seen)
+        // The band. Rejects any constant, and rejects ignoring durationMs (which would read ~100).
+        val peak = seen.max()
+        assertTrue(
+            "3 s of media against a claimed 30 s should peak near 10%, got $peak from $seen",
+            peak in 5..25,
+        )
+    }
+
     // --- the quality tier the GPL licence was taken for --------------------
 
     @Test
