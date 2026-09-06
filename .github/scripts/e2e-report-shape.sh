@@ -297,7 +297,16 @@ if [ -n "$failed_names" ]; then
 fi
 if [ "$advisory" = "yes" ]; then
   if [ "${#deviations[@]}" -eq 0 ]; then
-    echo "  baseline: matches ($baseline expected, $baseline failed)"
+    # Two spellings, because one of them would be a lie half the time. `$baseline expected,
+    # $baseline failed` is only true of a run that finished; on a truncated one `failed` is a
+    # tally of the tests that got to run before the framework died, and printing the baseline in
+    # its place claims a number nobody measured. Seen on PR #245's advisory leg, which reported
+    # `failed: 4` three lines above `matches (5 expected, 5 failed)`.
+    if [ "$failed" != "unknown" ] && [ "$failed" != "$baseline" ]; then
+      echo "  baseline: matches ($baseline expected; $failed of $baseline failed, on a run the abort truncated — not compared)"
+    else
+      echo "  baseline: matches ($baseline expected, $baseline failed)"
+    fi
   else
     printf '  baseline DEVIATION: %s\n' "${deviations[@]}"
   fi
