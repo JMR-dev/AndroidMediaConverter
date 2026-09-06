@@ -245,7 +245,17 @@ public final class FixtureDocumentsProvider extends DocumentsProvider {
         destinationFile(documentId).delete();
     }
 
-    /** Document ids {@link #deleteDocument} was called with, newest last. */
+    /**
+     * Document ids {@link #deleteDocument} was called with, newest last.
+     *
+     * <p><b>Nothing reads this yet, and that is recorded rather than hidden (#250).</b> It was
+     * added with #226 to assert {@code OutputPublisher.deletePartialOutput} — D4's cleanup — against
+     * a real {@code DocumentsProvider}. #226 only reached the <i>success</i> path, so the
+     * {@code catch} that calls it is still asserted only against {@code FakeSafProvider} under
+     * Robolectric. It is kept because the forcing condition is one {@code openDestination} override
+     * away and #250 says exactly what to add; if that ticket is closed any other way, delete this
+     * and {@link #DELETED} with it rather than leaving an accessor implying coverage.
+     */
     public static List<String> deletedDocumentIds() {
         synchronized (DELETED) {
             return new ArrayList<>(DELETED);

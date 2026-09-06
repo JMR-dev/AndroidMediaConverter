@@ -9,14 +9,22 @@ package org.libremediaconverter
  * That is the whole reason there is one annotation rather than a pair of test lists: two lists
  * drift, and the drift is silent in both directions (a test that runs nowhere reads as green).
  *
- * **"Cannot be run" covers two things, and it said only the first until 2026-09-05.** Four of the
- * five carriers simply fail: three Media3 tests die in the image's own `c2.goldfish.h264.decoder`,
- * and the SAF rotation test takes the framework down with it. The fifth —
- * `SafPickerRoundTripTest.pickingAFileThroughTheSystemPickerFillsInTheFileCard` — **passes about
- * half the time and aborts `system_server` every time**, which is worse for a gating leg than an
- * honest failure: it fails the leg from the teardown, with no failing test to point at (#108).
- * The wording was widened rather than the test excused; that test's own KDoc has the four-run
- * measurement.
+ * **"Cannot be run" covers three things now, and it covered only the first until 2026-09-05.**
+ * Four of the six carriers simply fail: three Media3 tests die in the image's own
+ * `c2.goldfish.h264.decoder`, and the SAF rotation test takes the framework down with it. The
+ * fifth — `SafPickerRoundTripTest.pickingAFileThroughTheSystemPickerFillsInTheFileCard` —
+ * **passes about half the time and aborts `system_server` every time**, which is worse for a
+ * gating leg than an honest failure: it fails the leg from the teardown, with no failing test to
+ * point at (#108). The wording was widened rather than the test excused; that test's own KDoc has
+ * the four-run measurement.
+ *
+ * **The sixth is the new third thing: it is marked by inheritance, not by measurement.**
+ * `SafPickerRoundTripTest.aSaveWritesToTheDocumentTheSystemPickerCreated` (#226) opens the same
+ * picker and then a second DocumentsUI dialog on top of it, so it sits on the same task-snapshot
+ * path its sibling was marked for. It has never been observed at API 37 either way — see the
+ * measurement under [FAILS_ON_EMULATOR_API37_BASELINE], which is why it cannot be. Marking it was
+ * the conservative choice, and **the trigger for revisiting it is the rotation test, not itself**:
+ * while that one truncates the advisory run, nothing downstream of it can report.
  *
  * It says only what has been measured: **on the emulator, at API 37.** The same tests pass on a
  * physical Pixel 10 Pro XL at API 37 and at API 33–36 on the same runner under the same renderer,
@@ -46,19 +54,21 @@ annotation class FailsOnEmulatorApi37
  * keep printing with nothing to compare to, so it announces that it could not read the baseline
  * rather than falling quiet. If you see that notice, this line is what it means.
  *
- * **One number, both checks, and that is what the marker means.** A test carrying it cannot be run
- * on this image, so the count is simultaneously how many the advisory leg runs and how many fail.
- * A *smaller* failure count is the interesting direction: it means one of them now passes, which
- * is the trigger the KDoc above names for deleting the annotation.
+ * **One number, both checks, and that is what the marker was meant to mean.** A test carrying it
+ * cannot be run on this image, so the count is meant to be simultaneously how many the advisory
+ * leg runs and how many fail. A *smaller* failure count is the interesting direction: it means one
+ * of them now passes, which is the trigger the KDoc above names for deleting the annotation.
+ * **Since 2026-09-06 the second half no longer holds in practice** — the run truncates before two
+ * of the six start, which the last paragraph below measures. `expected` still holds, and it is the
+ * field that catches a marker added without changing this number.
  *
- * **The picker test is the one to read that sentence carefully for.**
- * `pickingAFileThroughTheSystemPickerFillsInTheFileCard` was marked on 2026-09-05 for aborting
- * `system_server` rather than for failing (#108), and on the gating leg it passed two runs of
- * four. It fails on the advisory leg because the rotation test runs before it and takes the
- * framework down first — measured, `api37-debug.yml` run 34008889182, which reports
- * `expected: 4, received: 4, failed: 4` with the four in the order Media3, Media3, rotation,
- * picker. (Those dispatches predate the third Media3 marker landing on `main`, so their totals
- * are four rather than five; the ordering they establish is what matters here.)
+ * **The picker tests are the ones to read that sentence carefully for, and the reason changed
+ * on 2026-09-06.** `pickingAFileThroughTheSystemPickerFillsInTheFileCard` was marked on
+ * 2026-09-05 for aborting `system_server` rather than for failing (#108), and on the gating leg
+ * it passed two runs of four. It was recorded here as *failing* on the advisory leg, behind the
+ * rotation test — measured, `api37-debug.yml` run 34008889182, `expected: 4, received: 4,
+ * failed: 4`, in the order Media3, Media3, rotation, picker. (Those dispatches predate the third
+ * Media3 marker, so their totals are four rather than six.)
  *
  * **But a second dispatch of the identical configuration reported 4/3/3**, having lost the last
  * test to the abort rather than to anything about the test list, and that is why
@@ -67,6 +77,14 @@ annotation class FailsOnEmulatorApi37
  * the field that answers "is the marked set the size this number says". Read a *clean* run
  * reporting fewer failures than this as one of them now passing; read a truncated one as the
  * framework having died, which is this job's normal.
+ *
+ * **That is no longer what happens, and the difference is that neither picker test reports at
+ * all.** With six carriers the rotation test truncates the run before them: **all four** advisory
+ * runs at this baseline — 34041156680, 34041593697, 34042397320 and 34043502322 — report
+ * `expected: 6, received: 4, failed: 4`, and the four are the three Media3 tests plus the
+ * rotation. So the advisory leg currently answers for
+ * four of its six, and the comparison below is unaffected only because `failed` is not compared
+ * on a truncated run. Read it as **unmeasured**, not as passing or failing.
  *
  * So: adding or removing a [FailsOnEmulatorApi37] means changing this number, in this file, in
  * the same diff. The report says so on the run itself if you forget — it prints the tree's own

@@ -382,7 +382,7 @@ decision, not a detail — see **E6** for why no third option exists — and **#
 | **#223** | `HardwareFallbackTest` never attempts the hardware path on any emulator leg | closed — it skips instead of passing vacuously |
 | **#224** | Cancelling a *running* native session, in any of the three engines | closed — all three engines |
 | **#225** | No `content://` input has reached a *successful* conversion — the ffkitsaf bridge | closed, and it found **#238** |
-| **#226** | `OutputPublisher.publish` against a real `DocumentsProvider` | closed — the premise holds; see E7 |
+| **#226** | `OutputPublisher.publish` against a real `DocumentsProvider` | closed — the *premise* holds; see E7. The delete **arm** is still unrun: **#250** |
 | **#227** | The notification's Cancel action has never been fired | closed |
 | **#228** | `encodesFlacLosslessAudio` and `encodesOpus` pass on any non-empty file | closed |
 | **#229** | FFmpeg's progress percentage is computed everywhere and asserted nowhere | closed |
@@ -401,3 +401,39 @@ unasserted value, it was **a combination of two covered things that no test put 
 the acceptance criterion wave 4 established and which caught two vacuous tests in that wave before
 they shipped. #223 is the one that shows why the criterion matters: it has two passing assertions and
 still tests nothing.
+
+## The 2026-09-06 re-check
+
+Run after the last ticket landed, to ask whether the suite's self-description had drifted again. It
+had, and **every drifted line came from #226 — the last PR of this read's own wave.**
+
+The suite is 70 tests in 14 classes, 6 carrying `@FailsOnEmulatorApi37`, gating leg 64; the
+committed baseline says 6 and the advisory job agrees (`baseline: matches`). Every gating leg is
+green on `main`.
+
+- **The counts had gone stale in four places** — `CLAUDE.md` (three sites),
+  `FailsOnEmulatorApi37.kt`'s KDoc, and two comments in `status_check.yml` — all still saying five
+  carriers of 69. **The gating figure is what hid it**: 69 − 5 and 70 − 6 are both 64, so the one
+  number a reader would check against a run had not moved. CLAUDE.md's own instruction to derive
+  these rather than remember them is what caught it.
+- **Two KDoc claims in `SafPickerRoundTripTest` described a draft rather than the code.** The save
+  test says MP3 was chosen so the setup could not depend on device codecs; the code converts at the
+  default `MP4_H265` / `FAST`, which routes by `canEncode(H265)`. The *negation* of the stated
+  reason was true. This is **E1 and E3's failure mode landing in a test written by the read that
+  found it** — a passing test with a wrong explanation.
+- **Neither picker test has ever reported on the advisory leg.** The marker's KDoc said the picker
+  test *fails* there behind the rotation test; with six carriers the rotation test truncates the run
+  first, and all four advisory runs at this baseline (`34041156680`, `34041593697`,
+  `34042397320`, `34043502322`) report `expected: 6, received: 4, failed: 4` — the three Media3
+  tests plus the rotation. The save test is therefore
+  marked by **inheritance, not measurement**, which is now what both KDocs say.
+- **One substantive gap, filed as #250.** `FixtureDocumentsProvider.deletedDocumentIds()` has no
+  callers. #226 proved D4's *premise* — SAF hands back a document of exactly zero bytes — but drove
+  only the success path, so `deletePartialOutput` against a real `DocumentsProvider` is still
+  asserted nowhere. `openDestination` is `protected open` precisely to force the failure, so the
+  test is cheap; it costs another marked picker test and a baseline of 7.
+
+**The reusable part is the second bullet.** A read that fixes documentation drift can introduce it in
+the same wave, and the tests it writes are no more self-describing than the ones it audited. The
+check that found it is the one this document already recommends: **read the KDoc against the code,
+not against the ticket.**
