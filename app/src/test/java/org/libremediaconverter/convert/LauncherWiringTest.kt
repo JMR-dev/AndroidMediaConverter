@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.media3.common.util.UnstableApi
@@ -77,6 +78,28 @@ class LauncherWiringTest {
      * The transposition guard. A picked file has to reach `onInputPicked`, which is observable as
      * the screen arriving at `Ready` with the file card showing — `save()` from `Idle` returns at
      * its own guard and leaves nothing behind.
+     *
+     * ## Why this waits rather than asserting straight away (#220)
+     *
+     * `onInputPicked` does not reach `Ready` on the calling thread. It hops twice —
+     * `withContext(pickDispatcher) { InputQuery.describe(...) }` and then the probe — and
+     * `pickDispatcher` defaults to `Dispatchers.IO`, a real background thread that Compose's
+     * idling does not know about. `deliver` therefore returns with the state still `Idle` more
+     * often than not, and asserting immediately was a race the test usually won.
+     *
+     * It lost five times on CI in one day, on PRs whose diffs were instrumented tests and
+     * documentation, which is what #220 was filed for. `waitUntil` polls through
+     * `waitForIdle`, so it drains the main looper each time round and sees the recomposition that
+     * the IO hop eventually posts back.
+     *
+     * **Injecting the dispatcher would be better and is not available here.** `pickDispatcher` is
+     * a constructor parameter precisely so a test can pin it, but this test composes the real
+     * `ConverterScreen`, which resolves its own ViewModel through `viewModel()` — the seam exists
+     * one layer below the thing under test. Pinning it would mean not testing the launcher edge,
+     * which is the whole point of this class.
+     *
+     * The wait does not weaken the assertion: transposing the two callbacks leaves the screen in
+     * `Idle` forever, so it fails on the timeout with the same meaning it failed with before.
      */
     @Test
     fun `a picked document is loaded as input rather than saved to`() {
@@ -85,6 +108,11 @@ class LauncherWiringTest {
         composeRule.onNodeWithTag(TestTags.Converter.CHOOSE_FILE).performClick()
         deliver(Uri.parse("content://test/holiday.mkv"))
 
+        composeRule.waitUntil(PICK_TIMEOUT_MS) {
+            composeRule.onAllNodesWithTag(TestTags.Converter.FILE_CARD_NAME)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
         composeRule.onNodeWithTag(TestTags.Converter.FILE_CARD_NAME).assertIsDisplayed()
     }
 
@@ -137,5 +165,14 @@ class LauncherWiringTest {
             Intent().setData(uri),
         )
         composeRule.waitForIdle()
+    }
+
+    private companion object {
+        /**
+         * Long enough that a slow CI runner is not the reason this fails, short enough that a
+         * genuinely transposed callback does not stall the suite. The pick normally lands in
+         * single-digit milliseconds.
+         */
+        const val PICK_TIMEOUT_MS = 10_000L
     }
 }

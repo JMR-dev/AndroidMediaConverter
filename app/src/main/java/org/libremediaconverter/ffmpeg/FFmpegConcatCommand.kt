@@ -35,6 +35,21 @@ object FFmpegConcatCommand {
             add("concat")
             add("-safe")
             add("0")
+            // And -protocol_whitelist permits the *scheme* those paths carry, which is a
+            // separate gate (#238). Every input the user actually picks is a content:// URI --
+            // JoinScreen uses OpenMultipleDocuments -- so ConcatEngine maps it through
+            // FFmpegKitConfig.getSafParameterForRead and writes an `ffkitsaf:` path into the
+            // list file. The concat demuxer applies its own whitelist, defaulting to
+            // "file,crypto,data", and refused every one of them:
+            //
+            //   [ffkitsaf @ ...] Protocol 'ffkitsaf' not on whitelist 'file,crypto,data'!
+            //
+            // This only widens that default. It is on the stream-copy branch alone because it
+            // is the only one that feeds the demuxer a list file -- REENCODE passes each input
+            // with its own -i, where the whitelist does not apply, which is why joining over SAF
+            // worked for mismatched clips and failed for matching ones.
+            add("-protocol_whitelist")
+            add(PROTOCOL_WHITELIST)
             add("-i")
             add(listFile.absolutePath)
             add("-c")
@@ -84,4 +99,12 @@ object FFmpegConcatCommand {
             add(output.absolutePath)
         }
     }
+
+    /**
+     * The concat demuxer's protocol whitelist: FFmpeg's own default, plus ffmpeg-kit's SAF scheme.
+     *
+     * Spelled out rather than appended to an unknown default, because the default is FFmpeg's and
+     * could change under us; naming all four keeps the command self-describing. See #238.
+     */
+    private const val PROTOCOL_WHITELIST = "file,crypto,data,ffkitsaf"
 }
