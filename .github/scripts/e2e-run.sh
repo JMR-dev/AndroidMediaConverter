@@ -78,12 +78,30 @@ WEDGE_TIMEOUT=1200
 # system_server that was still exiting, so its wait was not a wait), bring it back, verify the
 # package against `pm list packages -d`, and require a 45 s window with zero new aborts.
 # Three rounds, because one is not reliable and the failure is silent.
+#
+# THE RESTART NEEDED ROOT, AND DID NOT HAVE IT UNTIL 2026-09-05. `adb shell stop` and
+# `adb shell start` are root-only, so every API 37 leg ever run printed `Must be root` twice and
+# restarted nothing -- green legs and red ones alike. SystemUI therefore stayed up for the whole
+# run, which the logcat shows directly (`WindowManagerShell ... app=com.android.systemui`, from a
+# live SystemUI pid, minutes after the "final state: SystemUI disabled" line). The paragraph above
+# says why the `pm disable-user` on its own buys nothing: it does not retract the registration.
+#
+# The images are userdebug -- `google/sdk_gphone64_x86_64/emu64xa:17/...:userdebug/dev-keys` -- so
+# `adb root` is available and was the only thing missing. Measured on the local android-37.0 AVD,
+# same image and fingerprint as CI: `stop` -> `Must be root`; `adb root` -> `whoami` says `root`;
+# `stop` -> exit 0 and `pidof system_server` empty; `start` -> exit 0.
+#
+# Root is dropped again before the suite runs. Everything Gradle does afterwards -- install,
+# instrument, uninstall -- has to be what the other four legs do, and `adb root` changes the uid
+# every later `adb shell` runs as. Both calls restart adbd, hence `wait-for-device` after each.
 # ---------------------------------------------------------------------------
 count_aborts() { adb logcat -d -b crash 2> /dev/null | grep -c 'hasReadColorBufferDma'; }
 systemui_disabled() { adb shell pm list packages -d 2> /dev/null | grep -q 'com.android.systemui'; }
+adb_as_root() { adb root > /dev/null 2>&1; adb wait-for-device; }
+adb_as_shell() { adb unroot > /dev/null 2>&1; adb wait-for-device; }
 
 disable_region_sampling() {
-  local round=1 i out before after
+  local round=1 i out down back before after
   while [ "$round" -le 3 ]; do
     echo "--- SystemUI disable, round $round ---"
     for i in $(seq 1 10); do
@@ -94,22 +112,48 @@ disable_region_sampling() {
     done
 
     echo "  restarting the framework"
-    adb shell stop
+    adb_as_root
+    echo "  adbd is running as $(adb shell whoami 2>&1 | tr -d '\r')"
+    out="$(adb shell stop 2>&1 | tr -d '\r')"
+    [ -n "$out" ] && echo "  stop said: $out"
+    # `down` rather than reading `i` afterwards: the loop leaves `i` at 20 whether it broke on the
+    # process being gone or simply ran out, and the old version printed that as "system_server down
+    # after ~40 s" for a stop that had done nothing at all. A wait that did not observe the thing
+    # it was waiting for has to say so.
+    down=no
     for i in $(seq 1 20); do
-      [ -z "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ] && break
+      if [ -z "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ]; then
+        down=yes
+        break
+      fi
       sleep 2
     done
-    echo "  system_server down after ~$((i * 2)) s"
-    adb shell start
+    if [ "$down" = "yes" ]; then
+      echo "  system_server down after ~$((i * 2)) s"
+    else
+      echo "  system_server STILL RUNNING after ~$((i * 2)) s -- the stop did not take"
+    fi
+    out="$(adb shell start 2>&1 | tr -d '\r')"
+    [ -n "$out" ] && echo "  start said: $out"
+    adb_as_shell
+    # Same flag, same reason as `down` above: this loop also used to report its own exhaustion as
+    # an elapsed time, so "services back after ~150 s" and "services never came back" printed the
+    # same line.
+    back=no
     for i in $(seq 1 30); do
       if adb shell service check package 2> /dev/null | grep -q ': found' \
         && adb shell service check activity 2> /dev/null | grep -q ': found' \
         && [ -n "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ]; then
-        echo "  services back after ~$((i * 5)) s"
+        back=yes
         break
       fi
       sleep 5
     done
+    if [ "$back" = "yes" ]; then
+      echo "  services back after ~$((i * 5)) s"
+    else
+      echo "  services NOT back after ~$((i * 5)) s -- package, activity or system_server missing"
+    fi
 
     if systemui_disabled; then
       echo "  verified: com.android.systemui is in pm list packages -d"

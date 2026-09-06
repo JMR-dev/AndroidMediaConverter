@@ -325,6 +325,48 @@ retract an existing registration — it only stops the package being started aga
 and proceeding straight to the tests fails exactly as before. The harness therefore does
 `stop; start` afterwards, so the framework that comes back never starts SystemUI at all.
 
+**And on CI that `stop; start` did nothing at all until 2026-09-05.** Both are root-only commands,
+adbd on a freshly booted emulator is not root, and the step log had been saying so on every API 37
+leg since the function was written — `Must be root`, twice, between lines that read as if the
+restart had happened:
+
+```
+  restarting the framework
+Must be root
+  system_server down after ~40 s
+Must be root
+  services back after ~5 s
+  verified: com.android.systemui is in pm list packages -d
+```
+
+Neither number was an observation. The `pidof` loop breaks when the process is gone and otherwise
+falls out at its last iteration, and the old code printed the iteration count either way — so
+"down after ~40 s" is what a stop that did nothing looks like. The paragraph above is what makes
+this matter rather than merely untidy: without the restart the disable buys nothing, and the
+logcat confirms it directly — SystemUI is alive for the whole run, logging
+`WindowManagerShell ... app=com.android.systemui` minutes after `final state: SystemUI disabled`.
+
+The images are userdebug, so `adb root` is all that was missing. Measured on the local
+`android-37.0` AVD, same fingerprint as CI
+(`google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys`):
+
+```
+adb shell stop     -> Must be root
+adb root           -> restarting adbd as root
+adb shell whoami   -> root
+adb shell stop     -> exit 0;  adb shell pidof system_server -> (empty)
+adb shell start    -> exit 0
+```
+
+`disable_region_sampling` now takes root for the restart and drops it again with `adb unroot`
+before Gradle runs, so install, instrument and uninstall happen as the other four legs do it. Both
+waits report whether they observed what they were waiting for instead of printing their own
+exhaustion as an elapsed time.
+
+**It does not touch the picker test's abort**, and it was never going to: that one is
+WindowManager inside `system_server`, not SystemUI. What it fixes is the *idle* trigger this
+section is about, which had been left running on every leg.
+
 ### The two deviations, stated plainly
 
 1. **The renderer is ANGLE, not the host GPU.** Shared with nothing else in the matrix — API
@@ -356,6 +398,99 @@ page's opening correction is about:
 So a rotation, which rebuilds every surface at once, is what the mapper does not survive. Merely
 starting DocumentsUI is not. Only the rotation test carries `@FailsOnEmulatorApi37`; the picker
 test runs on the gating leg like anything else.
+
+#### That last sentence was wrong for twelve days, and the aborts in the table said so
+
+**Corrected 2026-09-05.** Read the second row again: the picker test passes *and takes four
+`hasReadColorBufferDma` aborts with it*. This section counted them, put them in the table, and then
+drew the conclusion from the pass/fail column alone. The right question is not "does the test
+pass" but "does the image survive it", and the answer had been printed in the right-hand column
+from the day it was written.
+
+Four gating API 37 runs read logcat-first — 34006456986, 34001744574, 34001377499, and the **green**
+34002313300 — say it without ambiguity. Each carries exactly two aborts before the suite starts
+(both `surfaceflinger`, during boot and the SystemUI disable) and then exactly **one** during it:
+
+| run | picker test window | the run's only in-suite abort | leg |
+|---|---|---|---|
+| 34006456986 | 02:33:04.2 → 02:34:46.9, **failed** | 02:34:46.845 | red, `failed: 1` |
+| 34001744574 | 00:55:41.4 → 00:57:23.9, **failed** | 00:57:23.794 | red, `failed: 1` |
+| 34001377499 | 00:35:53.3 → 00:36:00.6, passed | 00:35:59.662 | red, `failed: 0` |
+| 34002313300 | 00:58:12.7 → 00:58:19.8, passed | 00:58:19.218 | green |
+
+Every one is `system_server`, thread `TaskSnapshotPer`, and every one lands inside that test's
+window. Nothing else in the gating set of 57 reaches the mapper at all. So the picker test is
+**deterministic** in what it does to the image and a coin flip in what the leg reports: 34001377499
+passed it and lost the leg from teardown with no failing test to name, and 34002313300 passed it
+0.6 s after the abort and went green.
+
+That is #108, which had been filed against this behaviour in August and left open because the
+trigger was unknown. The trigger is this test. It now carries `@FailsOnEmulatorApi37` too, and the
+marker's KDoc had to widen from "does not pass on this image" to "cannot be run on this image" to
+say so honestly.
+
+The stack, for the record, is a different caller from either of the two above:
+
+```
+Cmdline: system_server        name: TaskSnapshotPer
+Abort message: 'Assertion failed: !rcEnc->featureInfo()->hasReadColorBufferDma'
+
+  #04  mapper.ranchu.so   GoldfishMapper::readFromHost(cb_handle_t const&) const+543
+  #06  libui.so           android::Gralloc5Mapper::lock(...)+63
+  #10  libandroid_runtime.so  android::lockImageFromBuffer(...)+374
+  #15  framework.jar      android.media.ImageReader$SurfaceImage.getPlanes+50
+  #17  services.jar       com.android.server.wm.TaskSnapshotConvertUtil.copyToSwBitmapDirect+56
+  #28  services.jar       com.android.server.wm.SnapshotPersistQueue$StoreWriteQueueItem.writeBuffer+66
+  #32  services.jar       com.android.server.wm.SnapshotPersistQueue$1.run+186
+```
+
+WindowManager writing a task snapshot to disk, which needs the buffer as a software bitmap, which
+is the non-DMA readback path. `PickActivity` is started **into the app's own task** (`Task #11
+A=10234:org.libremediaconverter` in the logcat), so the snapshot being persisted is that task's,
+and the churn at the end of the pick is what schedules it.
+
+#### There is no shell knob for task snapshots, and that was checked rather than assumed
+
+#108 asks whether `TaskSnapshotPersister` is suppressible the way the region-sampling listener was.
+Probed on a local `android-37.0 google_apis x86_64` AVD, 2026-09-05:
+
+```
+getprop | grep -i snapshot                          # nothing but apexd-snapshotde
+settings list global | grep -iE 'snapshot|recents'  # empty
+device_config list window_manager | grep -i snapshot # empty
+cmd window help                                     # no snapshot or screenshot command
+dumpsys window | grep -i snapshot                   # mSnapshotEnabled=true, for Task and Activity
+```
+
+`mSnapshotEnabled` is real state and there is nothing that sets it from outside. The only
+`device_config` hits anywhere in the tree are aconfig flags — e.g.
+`windowing_frontend/com.android.window.flags.respect_requested_task_snapshot_resolution` — which
+tune the snapshot rather than disable it. So the marker is the available answer, not the lazy one.
+
+#### When the picker test does fail, the abort is the coda and not the cause
+
+Worth separating, because the failure message points the wrong way. In both runs where the test
+itself went red, it had been broken for 98 seconds before the abort landed. The discriminator is
+one line, present in both reds and absent from the green:
+
+```
+I/InputDispatcher: No new touched window at (539.0, 525.0) in display 0
+```
+
+(539, 525) is the centre of the fixture's root row — the same coordinates the green run clicks.
+The touch reaches no window and is discarded; `UiObject2.click()` cannot see that and returns
+normally. DocumentsUI then logs nothing at all, where the green run logs `DocumentStack` and
+`Creating new directory loader` 40 ms after its click. The walk waits out its timeout twice for a
+fixture it never navigated to, and by the time the back presses start, WindowManager is still
+saying `no window has focus but ...PickActivity may eventually add a window when it finishes
+starting up` — for another 63 s. All four presses are dropped, DocumentsUI ANRs on
+`Input dispatching timed out`, and only *then* does the abort fire and make the failure message
+read `no windows at all`.
+
+`SafPickerRoundTripTest.forceStopThePicker` is the answer to that half: `am force-stop` goes around
+input entirely, so the picker's process can be removed from a task no key press can reach and
+`pickTheFixture`'s whole-picker retry — which exists for exactly this — becomes reachable again.
+That is a fix to the test on every level, not to API 37.
 
 #### The correction that produced that table
 

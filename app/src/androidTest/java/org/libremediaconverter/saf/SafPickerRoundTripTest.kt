@@ -296,7 +296,35 @@ class SafPickerRoundTripTest {
         device.waitForIdle()
     }
 
+    /**
+     * **Marked for API 37 because of what it does to the image, not because it fails there.**
+     *
+     * This is the one place the marker's KDoc phrase "cannot pass on this image" does not fit, and
+     * the distinction is worth keeping rather than smoothing over. Across the four gating API 37
+     * runs whose logcats were read on 2026-09-05 — 34006456986, 34001744574, 34001377499 and the
+     * green 34002313300 — the leg carries exactly two `hasReadColorBufferDma` aborts before the
+     * suite starts (both `surfaceflinger`, during boot and the SystemUI disable) and then exactly
+     * **one** during it. Every time, that one is `system_server` on the `TaskSnapshotPer` thread,
+     * and every time it lands inside this test's window. No other test in the gating set reaches
+     * the mapper at all.
+     *
+     * So this test kills the framework on that image whether it passes or not, and whether the leg
+     * goes red is luck: 34001377499 passed it and lost the leg anyway (`failed: 0`, teardown
+     * broken), 34002313300 passed it 0.6 s after the abort and went green. That is #108, and it is
+     * why the leg was failing on unrelated PRs.
+     *
+     * `docs/api-37-emulator-crash.md` measured this test on 2026-08-24, recorded "passes, 4 aborts
+     * in the window", and concluded that a rotation reaches the mapper where starting DocumentsUI
+     * does not. The aborts were seen; what was not drawn out is that they are this test's own and
+     * are not intermittent.
+     *
+     * The marker is what routes it off the gating leg and into the advisory job beside its
+     * rotation sibling. **It is not a statement about the picker**: the same test passes on API
+     * 33–36 on the same runner and on the Pixel 10 Pro XL, which is where API 37's answer comes
+     * from.
+     */
     @Test
+    @FailsOnEmulatorApi37
     fun pickingAFileThroughTheSystemPickerFillsInTheFileCard() {
         pickTheFixture()
 
@@ -602,6 +630,9 @@ class SafPickerRoundTripTest {
      * It is also why this counts backs rather than pressing a fixed number of them. One back is
      * enough from Recent and two are needed from inside the root, but a third from Recent would
      * finish `MainActivity` and take the rest of the test with it.
+     *
+     * **[forceStopThePicker] is the escalation after the presses, and it exists because a back
+     * press is not always deliverable.** See its own KDoc for the measurement.
      */
     private fun dismissThePicker() {
         repeat(BACK_PRESSES) {
@@ -616,13 +647,48 @@ class SafPickerRoundTripTest {
         // The check after the last press, and not a spare one: `repeat` presses on its final
         // iteration too, so without this a dismissal that worked on the last press would still be
         // reported as a failure to close.
+        if (awaitAppFocus()) return
+        forceStopThePicker()
         if (!awaitAppFocus()) {
             throw AssertionError(
-                "the system picker would not close: after $BACK_PRESSES back presses the app " +
-                    "still does not have the window focus, and ${device.currentPackageName} is " +
-                    "in front. What could be seen: " + describeWindows(),
+                "the system picker would not close: after $BACK_PRESSES back presses and a " +
+                    "force-stop of $DOCUMENTS_UI_PACKAGE the app still does not have the window " +
+                    "focus, and ${device.currentPackageName} is in front. What could be seen: " +
+                    describeWindows(),
             )
         }
+    }
+
+    /**
+     * Kills the picker's process, for when no back press can reach it.
+     *
+     * **The failure this exists for cannot be answered with input, and that is the whole point.**
+     * Measured on the gating API 37 legs of runs 34006456986 and 34001744574, which fail this way
+     * and whose logcats say the same thing in the same order. `UiObject2.click()` on the fixture's
+     * root is injected at the node's centre and the framework discards it —
+     * `InputDispatcher: No new touched window at (539.0, 525.0) in display 0` — because
+     * `PickActivity` has published accessibility nodes but has no touchable window there yet.
+     * `click()` cannot see that and returns normally, so the walk goes on to wait out
+     * [PICKER_TIMEOUT_MS] for a fixture that was never navigated to. By the time this function's
+     * caller starts pressing back, WindowManager is still saying
+     * `no window has focus but ...PickActivity may eventually add a window when it finishes
+     * starting up` — and goes on saying it for another 63 s. Every one of the four presses is
+     * dropped, and DocumentsUI ANRs on `Input dispatching timed out`.
+     *
+     * So the picker is in front, unreachable by key or by touch, and [pickTheFixture]'s whole
+     * point — that a second `PickActivity` rebuilds every window and list in it — is unreachable
+     * with it. `am force-stop` goes around input entirely: `UiAutomation` runs shell commands as
+     * uid 2000, which holds `FORCE_STOP_PACKAGES`, so the picker's process is killed, its
+     * activity leaves the task it was launched into, and `MainActivity` — the activity below it in
+     * that same task — is resumed with the focus.
+     *
+     * **Only on the failure path**, after every back press has been spent, so a picker that closes
+     * the ordinary way never reaches this and is not altered by it. If the framework itself is
+     * gone, this cannot help either, and the caller still reports what it could see.
+     */
+    private fun forceStopThePicker() {
+        device.executeShellCommand("am force-stop $DOCUMENTS_UI_PACKAGE")
+        device.waitForIdle()
     }
 
     /** True once [MainActivity] has the window focus, false if it does not take it in time. */

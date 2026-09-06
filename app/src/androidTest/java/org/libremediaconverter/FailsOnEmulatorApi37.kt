@@ -1,13 +1,22 @@
 package org.libremediaconverter
 
 /**
- * Marks an instrumented test that does not pass on the `android-37.x` **emulator** system images.
+ * Marks an instrumented test that cannot be run on the `android-37.x` **emulator** system images.
  *
  * This is a marker, not a skip. Nothing reads it except CI, and CI reads it twice — once with
  * `notAnnotation` to build the gating API 37 leg, and once with `annotation` to build the advisory
  * one — so a test carrying it runs in exactly one of the two and can never fall through both.
  * That is the whole reason there is one annotation rather than a pair of test lists: two lists
  * drift, and the drift is silent in both directions (a test that runs nowhere reads as green).
+ *
+ * **"Cannot be run" covers two things, and it said only the first until 2026-09-05.** Three of the
+ * four carriers simply fail: two Media3 transcodes die in the image's own `c2.goldfish.h264
+ * .decoder`, and the SAF rotation test takes the framework down with it. The fourth —
+ * `SafPickerRoundTripTest.pickingAFileThroughTheSystemPickerFillsInTheFileCard` — **passes about
+ * half the time and aborts `system_server` every time**, which is worse for a gating leg than an
+ * honest failure: it fails the leg from the teardown, with no failing test to point at (#108).
+ * The wording was widened rather than the test excused; that test's own KDoc has the four-run
+ * measurement.
  *
  * It says only what has been measured: **on the emulator, at API 37.** The same tests pass on a
  * physical Pixel 10 Pro XL at API 37 and at API 33–36 on the same runner under the same renderer,
@@ -17,7 +26,7 @@ package org.libremediaconverter
  *
  * Removing it is the goal, and the trigger is written down: a new API 37.x system image, or an
  * ATD image for 37. Delete the annotation from the tests, and the advisory job goes empty and
- * the gating one grows by two.
+ * the gating one grows by four.
  *
  * **How many tests carry it is committed below**, as [FAILS_ON_EMULATOR_API37_BASELINE], and the
  * advisory job checks the run against it. Adding or removing a marker means changing that number
@@ -37,10 +46,18 @@ annotation class FailsOnEmulatorApi37
  * keep printing with nothing to compare to, so it announces that it could not read the baseline
  * rather than falling quiet. If you see that notice, this line is what it means.
  *
- * **One number, both checks, and that is what the marker means.** A test carrying it cannot pass
+ * **One number, both checks, and that is what the marker means.** A test carrying it cannot be run
  * on this image, so the count is simultaneously how many the advisory leg runs and how many fail.
  * A *smaller* failure count is the interesting direction: it means one of them now passes, which
  * is the trigger the KDoc above names for deleting the annotation.
+ *
+ * **The fourth carrier is the one to read that sentence carefully for.**
+ * `pickingAFileThroughTheSystemPickerFillsInTheFileCard` was marked on 2026-09-05 for aborting
+ * `system_server` rather than for failing (#108), and on the gating leg it passed two runs of
+ * four. On the advisory leg it runs after the rotation test has already taken the framework down,
+ * which is why the count still holds there — measured, not assumed, and the measurement is the
+ * reason this line did not have to become two numbers. If it ever starts reporting three failures
+ * out of four, read that as this test having got lucky rather than as an image that improved.
  *
  * So: adding or removing a [FailsOnEmulatorApi37] means changing this number, in this file, in
  * the same diff. The report says so on the run itself if you forget — it prints the tree's own
@@ -52,4 +69,4 @@ annotation class FailsOnEmulatorApi37
  * `INSTRUMENTATION_ABORTED`, so the count is a number taken from a partial run. The report
  * records the truncation next to the counts for that reason.
  */
-const val FAILS_ON_EMULATOR_API37_BASELINE = 3
+const val FAILS_ON_EMULATOR_API37_BASELINE = 4
