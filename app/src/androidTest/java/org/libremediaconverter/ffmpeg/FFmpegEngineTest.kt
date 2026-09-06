@@ -4,7 +4,16 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegSession
+import com.arthenica.ffmpegkit.ReturnCode
+import com.arthenica.ffmpegkit.SessionState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -191,6 +200,84 @@ class FFmpegEngineTest {
         )
     }
 
+    /**
+     * Cancelling a *running* conversion actually stops the native session.
+     *
+     * Nothing on any source set did this before (#224). Every `cancel` in `app/src/androidTest` is
+     * `WorkManager.cancelWorkById` against work that is **queued or already finished** — the two in
+     * `ReattachOnLaunchTest` cancel a job carrying a one-hour initial delay, and one immediately
+     * after enqueue. On the JVM, `WorkerCancellationTest` and `HardwareFallbackTest`'s cancellation
+     * case drive a `SoftwareTranscoder` double that records the call. No test had ever asked a real
+     * native session to stop. This is `docs/defect-audit.md` **D10**'s forcing condition.
+     *
+     * It is the one path where cancelling wrong is silently expensive rather than loudly broken: a
+     * missed `FFmpegKit.cancel` leaves the native process encoding to completion while the UI says
+     * the job is cancelled, and nothing reports the battery and thermal cost.
+     *
+     * ## Why the assertion is the session's return code, not the output file
+     *
+     * The obvious assertion — the partial output is gone — **cannot fail**, so it would have been a
+     * vacuous test. `invokeOnCancellation` deletes the path, and on POSIX unlinking a file ffmpeg
+     * still holds open leaves ffmpeg writing to the unlinked inode; the path stays gone whether or
+     * not the cancel ever reached the session. Deleting `FFmpegKit.cancel` and keeping
+     * `output.delete()` passes that check every time.
+     *
+     * What distinguishes them is the session's own verdict: a cancelled session ends with the
+     * cancel return code, a completed one ends successfully. That is a fact about the session
+     * rather than about timing, so it is read *after* waiting for the session to leave
+     * [SessionState.RUNNING] rather than at a fixed delay.
+     *
+     * ## Why it cancels on RUNNING rather than on the first progress callback
+     *
+     * Measured, and this is the part worth keeping. Cancelling from the first `onProgress` was
+     * tried first and **failed on a local API 34 emulator with `state=COMPLETED rc=0`** — every
+     * committed fixture is 2-3 s at 320x240, and the encode finishes before the first statistics
+     * callback has been delivered and acted on. The progress callback is proof the session is
+     * running, but it arrives too late to interrupt anything.
+     *
+     * `FFmpegKit.listSessions` shows the session as [SessionState.RUNNING] far earlier, so that is
+     * what is waited on. `QualityTier.BEST` is deliberate for the same reason: `-preset medium`
+     * leaves more of the encode ahead of the cancel than `veryfast` would.
+     *
+     * The session is identified by diffing against the ids present before the run, because this
+     * class has already produced eight of them by the time this executes.
+     */
+    @Test
+    fun cancellingARunningConversionCancelsTheNativeSession(): Unit = runBlocking {
+        val before = FFmpegKit.listSessions().map { it.getSessionId() }.toSet()
+        val out = outputFor("out_cancelled.mp4")
+
+        val job = launch(Dispatchers.IO) {
+            engine.run(
+                request = ConversionRequest(spec = OutputFormat.MP4_H265.spec, quality = QualityTier.BEST),
+                inputPath = input.absolutePath,
+                output = out,
+                durationMs = 3_000,
+            )
+        }
+
+        // Interrupt as early as the session can be observed at all. See the KDoc: waiting for
+        // progress instead lost the race outright.
+        val ours = withTimeout(TIMEOUT_MS) {
+            var found: FFmpegSession? = null
+            while (found?.getState() != SessionState.RUNNING) {
+                found = FFmpegKit.listSessions().firstOrNull { it.getSessionId() !in before }
+                if (found?.getState() != SessionState.RUNNING) delay(POLL_MS)
+            }
+            found
+        }
+        job.cancelAndJoin()
+
+        withTimeout(TIMEOUT_MS) {
+            while (ours.getState() == SessionState.RUNNING) delay(POLL_MS)
+        }
+
+        assertTrue(
+            "the native session was not cancelled: state=${ours.getState()} rc=${ours.getReturnCode()}",
+            ReturnCode.isCancel(ours.getReturnCode()),
+        )
+    }
+
     // --- the quality tier the GPL licence was taken for --------------------
 
     @Test
@@ -227,5 +314,11 @@ class FFmpegEngineTest {
             }
         }.exceptionOrNull()
         assertTrue("expected an FFmpegException, got $failure", failure is FFmpegEngine.FFmpegException)
+    }
+
+    private companion object {
+        /** Generous: it bounds a hang, and every wait here normally settles in well under a second. */
+        const val TIMEOUT_MS = 30_000L
+        const val POLL_MS = 50L
     }
 }
