@@ -5,7 +5,16 @@ import android.media.MediaFormat
 import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegSession
+import com.arthenica.ffmpegkit.ReturnCode
+import com.arthenica.ffmpegkit.SessionState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -16,6 +25,7 @@ import org.libremediaconverter.convert.MediaProbe
 import org.libremediaconverter.convert.StagingNames
 import org.libremediaconverter.ffmpeg.ConcatEngine
 import org.libremediaconverter.model.ConcatStrategy
+import org.libremediaconverter.work.ConcatWorker
 import java.io.File
 
 /**
@@ -48,6 +58,65 @@ class ConcatEngineTest {
     @After
     fun tearDown() {
         (staged + listOf(clipA, clipB, clipMismatched)).forEach { it.delete() }
+    }
+
+    /**
+     * Cancelling a *running* join actually stops the native session.
+     *
+     * The `FFmpegEngine` half of #224 landed first (PR #236); this is the same gap in
+     * [ConcatEngine]. Before these two, no test on any source set had ever asked a real native
+     * session to stop — every `cancel` in `app/src/androidTest` targets WorkManager entries that
+     * are queued or already finished.
+     *
+     * ## Two things carried over from the conversion side, both measured there
+     *
+     * **The assertion is the session's return code.** A cancelled session ends with the cancel
+     * code, a completed one does not. The alternative — checking the output file — is even less
+     * available here than it was for conversions: [ConcatEngine] does not delete its output on
+     * cancellation at all. Its `invokeOnCancellation` is `FFmpegKit.cancel(...)` and nothing else,
+     * where [org.libremediaconverter.ffmpeg.FFmpegEngine]'s also deletes the partial. Whether that
+     * asymmetry is deliberate is a separate question from this test, which is why this asserts the
+     * thing that is true of both.
+     *
+     * **The cancel is triggered on [SessionState.RUNNING], not on progress.** `ConcatWorker`
+     * publishes no progress at all, so there is no callback to hang it on even in principle — but
+     * the conversion side established the deeper reason: the committed clips are 2 s at 320x240 and
+     * the encode outruns a callback-triggered cancel.
+     *
+     * The inputs are deliberately the **mismatched** pair, so [ConcatStrategy.REENCODE] is chosen.
+     * A stream copy of two short clips is close to instantaneous and would leave nothing to
+     * interrupt; re-encoding is the case where a user would actually reach for Cancel.
+     *
+     * *Mutation:* drop `FFmpegKit.cancel(session.getSessionId())` from `ConcatEngine`'s
+     * `invokeOnCancellation` — the session runs to completion and this fails.
+     */
+    @Test
+    fun cancellingARunningJoinCancelsTheNativeSession(): Unit = runBlocking {
+        val before = FFmpegKit.listSessions().map { it.getSessionId() }.toSet()
+        val out = output("cancelled_join.mp4")
+
+        val job = launch(Dispatchers.IO) {
+            engine.join(listOf(Uri.fromFile(clipA), Uri.fromFile(clipMismatched)), out, ConcatWorker.DEFAULT_FORMAT)
+        }
+
+        val ours = withTimeout(TIMEOUT_MS) {
+            var found: FFmpegSession? = null
+            while (found?.getState() != SessionState.RUNNING) {
+                found = FFmpegKit.listSessions().firstOrNull { it.getSessionId() !in before }
+                if (found?.getState() != SessionState.RUNNING) delay(POLL_MS)
+            }
+            found
+        }
+        job.cancelAndJoin()
+
+        withTimeout(TIMEOUT_MS) {
+            while (ours.getState() == SessionState.RUNNING) delay(POLL_MS)
+        }
+
+        assertTrue(
+            "the native join session was not cancelled: state=${ours.getState()} rc=${ours.getReturnCode()}",
+            ReturnCode.isCancel(ours.getReturnCode()),
+        )
     }
 
     private fun copyAsset(name: String): File {
@@ -179,5 +248,11 @@ class ConcatEngineTest {
             "the probe must actually distinguish these clips, or the planner cannot",
             a.width != mismatched.width || a.height != mismatched.height,
         )
+    }
+
+    private companion object {
+        /** Generous: it bounds a hang, and both waits here normally settle in well under a second. */
+        const val TIMEOUT_MS = 30_000L
+        const val POLL_MS = 50L
     }
 }
