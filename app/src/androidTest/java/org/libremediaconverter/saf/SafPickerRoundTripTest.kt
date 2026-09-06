@@ -10,6 +10,9 @@ import androidx.compose.ui.test.performClick
 import androidx.media3.common.util.UnstableApi
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleCallback
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.Configurator
@@ -24,6 +27,7 @@ import org.junit.runner.RunWith
 import org.libremediaconverter.FailsOnEmulatorApi37
 import org.libremediaconverter.MainActivity
 import org.libremediaconverter.ui.TestTags
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Choosing a file, through the real system picker, and still having it after a rotation.
@@ -251,6 +255,21 @@ class SafPickerRoundTripTest {
     /** Set by the one test that rotates, read by [restoreOrientation]. See its KDoc. */
     private var rotated = false
 
+    /** Counts [MainActivity] creations from the moment [watchForRecreation] is called. */
+    private val recreations = AtomicInteger()
+
+    /**
+     * Counts a rotation's recreation without asking the Activity anything.
+     *
+     * Deliberately not `composeRule.activity`, which resolves through `scenario.onActivity` and so
+     * blocks on the main thread. Polling *that* across a recreation is a plausible reading of the
+     * 20-minute wedges in #122, which would make the obvious barrier the bug it is meant to fix.
+     * The runner's lifecycle monitor is a callback: reading the counter touches no looper.
+     */
+    private val recreationWatcher = ActivityLifecycleCallback { activity, stage ->
+        if (activity is MainActivity && stage == Stage.CREATED) recreations.incrementAndGet()
+    }
+
     /**
      * Leave the device the way it was found — and only if this test moved it.
      *
@@ -270,6 +289,7 @@ class SafPickerRoundTripTest {
      */
     @After
     fun restoreOrientation() {
+        ActivityLifecycleMonitorRegistry.getInstance().removeLifecycleCallback(recreationWatcher)
         if (!rotated) return
         device.setOrientationNatural()
         device.unfreezeRotation()
@@ -303,9 +323,11 @@ class SafPickerRoundTripTest {
         // The identity hash rather than the Activity itself, so nothing here keeps a destroyed
         // Activity reachable across the recreation it is being used to detect.
         val before = System.identityHashCode(composeRule.activity)
+        watchForRecreation()
 
         device.setOrientationLandscape()
         rotated = true
+        awaitRecreation()
         composeRule.waitForIdle()
 
         // Two guards before the assertion that matters, because both of the ways this test could
@@ -675,6 +697,36 @@ class SafPickerRoundTripTest {
      * `Condition still not satisfied after 30000 ms` — which names neither the node nor the test.
      * With the description it says which affordance never arrived, which is the whole finding.
      */
+    /** Starts counting [MainActivity] creations, so [awaitRecreation] can wait for the next one. */
+    private fun watchForRecreation() {
+        recreations.set(0)
+        ActivityLifecycleMonitorRegistry.getInstance().addLifecycleCallback(recreationWatcher)
+    }
+
+    /**
+     * Waits for the rotation to actually rebuild [MainActivity], which `waitForIdle` does not.
+     *
+     * **This is #122.** `waitForIdle()` waits for the compose hierarchy to settle. Immediately
+     * after a rotation the window manager has accepted but not yet delivered as a configuration
+     * change, the *old* Activity's composition is already idle — so it returns, `composeRule
+     * .activity` still resolves to the old instance, and the guard below reads an unchanged
+     * identity hash. That is the clean `AssertionError` seen on the API 33 gating leg of #217, and
+     * the wedges on #122 are the same race taken the other way: land while the composition is
+     * being torn down and there is nothing coherent for `waitForIdle` to settle on.
+     *
+     * A bounded wait is worth having even if that second half is wrong. It turns a 20-minute
+     * `WEDGE_TIMEOUT` — which costs the leg and names no test — into a fast failure that says which
+     * test and what it was waiting for.
+     */
+    private fun awaitRecreation() {
+        composeRule.waitUntil(
+            "the rotation did not recreate MainActivity within $RECREATION_TIMEOUT_MS ms",
+            RECREATION_TIMEOUT_MS,
+        ) {
+            recreations.get() > 0
+        }
+    }
+
     private fun awaitNode(tag: String) {
         composeRule.waitUntil("a node tagged $tag exists", APP_TIMEOUT_MS) {
             composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
@@ -702,6 +754,15 @@ class SafPickerRoundTripTest {
          * mutation — from costing three full-length attempts.
          */
         const val REOPENED_TIMEOUT_MS = 10_000L
+
+        /**
+         * How long a rotation is given to destroy and rebuild the Activity.
+         *
+         * Generous against the API 33 and 34 emulators #122 was measured on, where the rotation is
+         * slow enough for the gap this bound exists to cover to be observable at all — and still
+         * two orders of magnitude inside the 1200 s `WEDGE_TIMEOUT` it replaces.
+         */
+        const val RECREATION_TIMEOUT_MS = 15_000L
 
         /**
          * How long the app is given to take the window focus back after a back press.
