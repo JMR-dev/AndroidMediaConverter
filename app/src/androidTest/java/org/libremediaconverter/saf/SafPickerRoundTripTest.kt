@@ -595,10 +595,20 @@ class SafPickerRoundTripTest {
      * all and the conversion is already under way.
      */
     private fun dismissThePermissionDialog() {
-        if (device.wait(Until.hasObject(By.pkg(PERMISSION_UI_PACKAGE)), PERMISSION_DIALOG_MS) == true) {
-            device.pressBack()
-            device.wait(Until.gone(By.pkg(PERMISSION_UI_PACKAGE)), PERMISSION_DIALOG_MS)
+        if (device.wait(Until.hasObject(By.pkg(PERMISSION_UI_PACKAGE)), PERMISSION_DIALOG_MS) != true) {
+            return
         }
+        device.pressBack()
+        device.wait(Until.gone(By.pkg(PERMISSION_UI_PACKAGE)), PERMISSION_DIALOG_MS)
+        // And wait for the app to be in front again before anything asks Compose about it.
+        // Querying while another window still owns the screen raises "No compose hierarchies found
+        // in the app", which is what this test did on an API 35 leg: the back press had landed but
+        // the dialog had not finished going away.
+        //
+        // Asked of UiAutomator rather than through awaitAppFocus, which is the opposite of what the
+        // class KDoc argues for elsewhere and is right here: awaitAppFocus goes through
+        // composeRule.waitUntil, so it would raise the very error it is being used to avoid.
+        device.wait(Until.hasObject(By.pkg(context.packageName)), FOCUS_TIMEOUT_MS)
     }
 
     /**
