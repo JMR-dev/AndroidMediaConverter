@@ -28,6 +28,13 @@ name: API 37 debug
 #   - It does not fork .github/scripts/e2e-run.sh. That script owns the FAILED-vs-WEDGED
 #     split, the SIGQUIT thread dump and the streamed logcat, and it is the copy CI
 #     exercises every day. This calls it, exactly as status_check.yml does.
+#
+#     The SystemUI disable below is the exception, and it is a real one: this workflow
+#     drives it from its own probe step so `disable_system_ui` can be turned off for a
+#     dispatch, where the real leg gets it through `E2E_DISABLE_SYSTEM_UI`. Two copies of
+#     that logic therefore exist, and on 2026-09-05 both carried the same defect -- no
+#     `adb root`, so `adb shell stop` answered `Must be root` and nothing restarted. Fix
+#     one and the other needs the same change in the same diff.
 #   - It does not change status_check.yml. If a configuration here turns out to work,
 #     the change to the real matrix is proposed separately.
 #
@@ -294,24 +301,51 @@ jobs:
               # pm disable-user does not retract SystemUI's existing region-sampling
               # registration -- by the time boot completes it has already registered. Only a
               # framework restart brings back a SystemUI-less SurfaceFlinger. See
-              # disable_region_sampling in tools/local-emulator/run-e2e.sh.
+              # disable_region_sampling in .github/scripts/e2e-run.sh, which this mirrors.
+              #
+              # `adb root` first, because `stop` and `start` are root-only and adbd is not root
+              # on a freshly booted emulator: without it both printed `Must be root` and the
+              # restart never happened, on this workflow and on the real leg alike, for as long
+              # as either has existed. Root is dropped again before the suite runs so Gradle's
+              # install and instrument happen as an unprivileged adb does them. Both flags below
+              # exist because each loop used to print its own exhaustion as an elapsed time --
+              # "system_server down after 40 s" was what a stop that did nothing looked like.
               echo "  restarting the framework"
-              adb shell stop
+              adb root > /dev/null 2>&1; adb wait-for-device
+              echo "  adbd is running as $(adb shell whoami 2>&1 | tr -d '\r')"
+              out="$(adb shell stop 2>&1 | tr -d '\r')"
+              [ -n "$out" ] && echo "  stop said: $out"
+              down=no
               for i in $(seq 1 20); do
-                [ -z "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ] && break
+                if [ -z "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ]; then
+                  down=yes
+                  break
+                fi
                 sleep 2
               done
-              echo "  system_server down after $((i * 2)) s"
-              adb shell start
+              if [ "$down" = "yes" ]; then
+                echo "  system_server down after $((i * 2)) s"
+              else
+                echo "  system_server STILL RUNNING after $((i * 2)) s -- the stop did not take"
+              fi
+              out="$(adb shell start 2>&1 | tr -d '\r')"
+              [ -n "$out" ] && echo "  start said: $out"
+              adb unroot > /dev/null 2>&1; adb wait-for-device
+              back=no
               for i in $(seq 1 30); do
                 if adb shell service check package 2> /dev/null | grep -q ': found' \
                   && adb shell service check activity 2> /dev/null | grep -q ': found' \
                   && [ -n "$(adb shell pidof system_server 2> /dev/null | tr -d '\r\n')" ]; then
-                  echo "  services back after $((i * 5)) s"
+                  back=yes
                   break
                 fi
                 sleep 5
               done
+              if [ "$back" = "yes" ]; then
+                echo "  services back after $((i * 5)) s"
+              else
+                echo "  services NOT back after $((i * 5)) s"
+              fi
 
               if systemui_disabled; then
                 echo "  verified: com.android.systemui is in pm list packages -d"
