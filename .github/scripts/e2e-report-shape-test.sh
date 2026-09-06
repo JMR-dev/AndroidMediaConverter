@@ -204,6 +204,10 @@ TRUNCATED
 out="$(run_report "$root")"
 assert_contains "truncated run: the truncation is reported"  "$out" '  completed cleanly: no'
 assert_absent   "truncated run: the short failure count is not a deviation" "$out" 'tests failed, the baseline is'
+# And the match line has to say what actually happened rather than repeat the baseline: PR #245's
+# advisory leg printed `failed: 4` three lines above `matches (5 expected, 5 failed)`.
+assert_contains "truncated run: the match line does not claim the baseline's failure count" "$out" \
+  '  baseline: matches (3 expected; 2 of 3 failed, on a run the abort truncated — not compared)'
 
 # ---------------------------------------------------------------------------
 # 5. The same short failure count on a run that finished IS a deviation.
