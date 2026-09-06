@@ -76,12 +76,19 @@ days. Read it as the current answer, and see the git history if you need the old
   `angle_indirect` and `swangle_indirect` all boot, while `auto`, `off`, `guest` and
   `swiftshader_indirect` do not. `docs/local-emulator.md` has the evidence and the per-API renderer
   table.
-- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Five** of the 69 instrumented
-  tests cannot be *run* on that image, for three unrelated reasons: three Media3 tests fail inside
-  the emulator's own `c2.goldfish.h264.decoder`, one SAF test takes the framework down when it
-  rotates the display, and its sibling — the SAF picker round trip — aborts `system_server` from
-  the task-snapshot path whether it passes or not. All five carry `@FailsOnEmulatorApi37` and run
-  in a separate `continue-on-error` job; the gating leg runs the other 64.
+- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Six** of the 70 instrumented
+  tests cannot be *run* on that image, for three measured reasons and one inherited: three Media3
+  tests fail inside the emulator's own `c2.goldfish.h264.decoder`, one SAF test takes the framework
+  down when it rotates the display, and its sibling — the SAF picker round trip — aborts
+  `system_server` from the task-snapshot path whether it passes or not. The sixth, that class's
+  save through the picker (#226), carries the marker because it opens the same picker and a second
+  DocumentsUI dialog on top of it — **not** because it has ever been observed here. It cannot be:
+  the rotation test runs first and takes the framework down, so both of the advisory runs that
+  exist since it landed report `expected: 6, received: 4` and the four are the three Media3 tests
+  plus the rotation — runs 34042397320 and 34043502322. **Neither picker test has ever reported on
+  the advisory leg**, which is a correction to what the marker's own KDoc says. All six carry
+  `@FailsOnEmulatorApi37` and run in a separate `continue-on-error` job; the gating leg runs the
+  other 64 — **the same 64 as before**, which is exactly how this paragraph went stale unnoticed.
 
   **These two numbers move with the suite and are derived, not remembered.** `grep -cE
   '^\s*@Test' ` over `app/src/androidTest` is the first; the second is that minus the marker
@@ -114,7 +121,7 @@ days. Read it as the current answer, and see the git history if you need the old
   describes everything in it. The name is kept deliberately — it is not a required context and
   people have learned to look for it — so **read the marker, not the name**, for what it holds.
   **It is red on every PR, by design**: do not read it as your change breaking something, and do
-  not read a green run as evidence those five tests pass.
+  not read a green run as evidence those six tests pass.
   `docs/api-37-emulator-crash.md` has the measurements.
 
   **That instruction is also why nobody looks, so the job now reports its own shape** — expected,
@@ -134,7 +141,7 @@ days. Read it as the current answer, and see the git history if you need the old
   is gradle never returning, so the log it left says nothing about it.
 
 Still true, and the reason the advisory job is not simply deleted: **API 37 needs a manual check on
-the Pixel 10 Pro XL before each release.** Those five tests are the one thing CI cannot answer
+the Pixel 10 Pro XL before each release.** Those six tests are the one thing CI cannot answer
 for.
 
 On a device or emulator, build only the ABI it can execute:
@@ -339,7 +346,7 @@ install for code that can never run — and on API 37 the full APK does not fit 
   when a fix is for something intermittent.
 
   **Every number above is `testDebugUnitTest` only, and on 2026-09-05 the instrumented suite got its
-  first read for that reason** — `docs/e2e-read-findings.md`, entries **E1-E6**, tickets
+  first read for that reason** — `docs/e2e-read-findings.md`, entries **E1-E7**, tickets
   **#223-#230**. Four waves had been steered by a figure that **cannot see `app/src/androidTest` at
   all**, so nothing had ever asked what those 60 device tests pin, only that they were green.
 
@@ -377,6 +384,18 @@ install for code that can never run — and on API 37 the full APK does not fit 
   identity is denied too — each denial naming `ACTION_OPEN_DOCUMENT`. So #226 has no cheap headless
   half. But the *input* bridge needs no documents provider at all, which is what kept #225 headless
   and is how #238 surfaced.
+
+  **The 2026-09-06 re-check found that the read's own last PR had re-introduced the drift the read
+  was about**, and that is the entry worth carrying forward. #226 moved the suite 69 -> 70 and the
+  markers 5 -> 6 and changed neither the count in this file, the marker's KDoc, nor the two
+  comments in `status_check.yml`. **The gating figure is what hid it**: 69 - 5 and 70 - 6 are both
+  64, so the one number a reader checks against a run had not moved — which is precisely why the
+  paragraph above says to derive these rather than remember them. Worse, two KDoc claims in the new
+  test described a draft rather than the code: it says MP3 was chosen so the setup could not depend
+  on the device's codecs, while the code converts at the default `MP4_H265`/`FAST` and therefore
+  routes on `canEncode(H265)` — the *negation* of the stated reason. **That is E1 and E3's failure
+  mode, committed by the wave that found it.** All of it is fixed; the standing item is **#250**,
+  because #226 proved D4's premise and never drove its delete arm.
 
 - **Testable code is not done until it is tested.** If a piece is unit testable, it gets unit
   tests before it counts as done. If it is e2e testable, it gets e2e tests. Both clauses apply —

@@ -272,13 +272,15 @@ jobs:
           # has to begin after them, not between them. The name is stale and kept:
           # read .github/scripts/e2e-run.sh's header, which carries the measurements.
           #
-          # notAnnotation below keeps five tests off this row, and one of
-          # them is new. SafPickerRoundTripTest's PICKER test was measured on
-          # 2026-08-24 as passing here and was left on the leg; four gating logcats
-          # read on 2026-09-05 show it aborting system_server from the task-snapshot
-          # path on every single run, pass or fail, which is what had been failing
-          # unrelated PRs (#108). Both of that class's tests now carry the marker.
-          # docs/api-37-emulator-crash.md has the timings and the correction.
+          # notAnnotation below keeps six tests off this row. SafPickerRoundTripTest's
+          # PICKER test was measured on 2026-08-24 as passing here and was left on the
+          # leg; four gating logcats read on 2026-09-05 show it aborting system_server
+          # from the task-snapshot path on every single run, pass or fail, which is what
+          # had been failing unrelated PRs (#108). All THREE of that class's tests now
+          # carry the marker -- the save through the picker (#226) joined on 2026-09-05
+          # by inheritance rather than measurement, since it opens the same picker.
+          # docs/api-37-emulator-crash.md has the timings and the correction, and
+          # FailsOnEmulatorApi37.kt has why the third one cannot be measured here.
           #
           # api-level must be a POINT release. A bare 37 is not an SDK package and
           # fails during setup, which cost a run to discover. `37.0` is the choice
@@ -288,9 +290,11 @@ jobs:
           # docs/api-37-emulator-crash.md measures 37.0 rev 6 and 37.1 rev 8 side
           # by side, so pinning 37.0 is a decision, not a constraint.
           #
-          # notAnnotation removes the three tests that do not pass on this image; they
+          # notAnnotation removes the six tests that cannot be RUN on this image; they
           # run in the advisory job below, off the same marker so they cannot end up
-          # in both or neither. docs/api-37-emulator-crash.md has the measurements.
+          # in both or neither. "Cannot be run" rather than "do not pass" is deliberate:
+          # two of the six abort the framework rather than failing, and two never report
+          # at all. docs/api-37-emulator-crash.md has the measurements.
           - label: "37"
             api-level: "37.0"
             disable-system-ui: "1"

@@ -515,9 +515,28 @@ class SafPickerRoundTripTest {
      *
      * ## The conversion is setup, not subject
      *
-     * Save is only offered on `Converted`, so the test converts first. MP3 is chosen because the
-     * router sends it to FFmpeg unconditionally at every API level, so the setup cannot depend on
-     * the device's codecs — #223 is what that costs.
+     * Save is only offered on `Converted`, so the test converts first, at the screen's default
+     * `MP4_H265` / `FAST`. That is **not** codec-independent, and this KDoc claimed the opposite
+     * until 2026-09-06: an earlier draft used MP3 for exactly that reason, and the format had to
+     * move for a different constraint the picker imposes — [convertToTheDefaultFormat] has it.
+     * `MP4_H265` at `FAST` reaches `ConversionRouter`'s `canEncode(H265)` gate, so it runs on
+     * FFmpeg on the emulators (no hardware H265) and on Media3 on the Pixel.
+     *
+     * **That is tolerable here, and #223 is the reason it needs saying.** There, the routing
+     * decided whether the *subject* was reached, so a route to FFmpeg made the test pass while
+     * proving nothing. Here the conversion is setup: if it goes the other way and fails, this test
+     * fails loudly on the setup rather than quietly on the assertion. The subject is what `publish`
+     * was handed, which the engine that produced the file does not touch.
+     *
+     * ## Why it carries [FailsOnEmulatorApi37]
+     *
+     * By inheritance, not measurement. It opens the same picker as
+     * [pickingAFileThroughTheSystemPickerFillsInTheFileCard], which was marked for aborting
+     * `system_server` from the task-snapshot path (#108), and then a second DocumentsUI dialog on
+     * top of it. It has never been observed at API 37 either way: the rotation test truncates the
+     * advisory run first, so both advisory runs since this landed report `expected: 6, received: 4`
+     * without reaching either picker test. Marking it was the conservative choice and it is
+     * recorded as unmeasured in `FailsOnEmulatorApi37.kt` rather than dressed up as a measurement.
      */
     @Test
     @FailsOnEmulatorApi37
@@ -1060,7 +1079,13 @@ class SafPickerRoundTripTest {
         /** Short: either the dialog is up almost immediately, or the permission was already held. */
         const val PERMISSION_DIALOG_MS = 5_000L
 
-        /** A 3 s clip to MP3 on an emulator is about a second; this only bounds a hang. */
+        /**
+         * Only bounds a hang, and it is two orders of magnitude clear of the real cost: the whole
+         * test — pick, convert, save — takes **11.8 s** on the API 34 CI leg (run 34043502322).
+         * Deliberately generous because the engine is not fixed: the default `MP4_H265` at `FAST`
+         * lands on FFmpeg on an emulator and on Media3 on real hardware, which is faster rather
+         * than slower — see [convertToTheDefaultFormat].
+         */
         const val CONVERSION_TIMEOUT_MS = 120_000L
 
         /** The copy is a few kilobytes, but it crosses a provider. */
