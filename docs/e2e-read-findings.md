@@ -1,6 +1,6 @@
 # E2E-read findings
 
-**Status:** seven findings; E4 fixed, the rest standing, none urgent — **plus one confirmed vacuous test, which is a
+**Status:** seven findings; E4 fixed, E7 extended and its ticket closed, the rest standing — **plus one confirmed vacuous test, which is a
 ticket rather than an entry here** (see [Not covered here](#not-covered-here)). `E1`–`E6` came from
 the 2026-09-05 read of the instrumented suite. Every entry here is a *test-suite* observation —
 something a new test would not fix, because the test already exists and the problem is what it
@@ -274,6 +274,27 @@ ticket is about.
 **So any test of `publish` against a real `DocumentsProvider` must drive DocumentsUI**, and pays
 #190's flake tax. The work is one item at that cost, not two, and #226 was updated to say so.
 
+**Updated 2026-09-06, doing it: there is a second constraint underneath, and it has the same
+cause.** The obvious way to avoid driving the app was a host Activity in `androidTest` owning its
+own `CreateDocument` launcher. It cannot be started at all:
+
+```
+java.lang.RuntimeException: Intent in process org.libremediaconverter resolved to different
+  process org.libremediaconverter.test
+    at android.app.Instrumentation.startActivitySync
+```
+
+Instrumentation runs in the target app's process, so a component declared in the instrumentation
+APK is in the wrong one — the same fact that sinks approach 2 above, arriving from the other side.
+**The app's own Save button is the only launcher available to drive**, which is also the more
+faithful thing to drive. `SafPickerRoundTripTest.aSaveWritesToTheDocumentTheSystemPickerCreated` is
+what came of it.
+
+**And the premise turned out to be true**, which is the answer #226 was filed for: on API 34,
+stock DocumentsUI hands back a document URI reporting a size of exactly zero. `deletePartialOutput`
+can fire, and D4's fix is live rather than inert. A "no defect found" — and not one that could have
+been reached by reading.
+
 ### What this does *not* block, which is the useful half
 
 `FFmpegKitConfig.getSafParameterForRead` — the bridge on every real conversion and join — needs no
@@ -361,7 +382,7 @@ decision, not a detail — see **E6** for why no third option exists — and **#
 | **#223** | `HardwareFallbackTest` never attempts the hardware path on any emulator leg | closed — it skips instead of passing vacuously |
 | **#224** | Cancelling a *running* native session, in any of the three engines | closed — all three engines |
 | **#225** | No `content://` input has reached a *successful* conversion — the ffkitsaf bridge | closed, and it found **#238** |
-| **#226** | `OutputPublisher.publish` against a real `DocumentsProvider` | **open** — re-scoped by E7; one picker-driven item, not two |
+| **#226** | `OutputPublisher.publish` against a real `DocumentsProvider` | closed — the premise holds; see E7 |
 | **#227** | The notification's Cancel action has never been fired | closed |
 | **#228** | `encodesFlacLosslessAudio` and `encodesOpus` pass on any non-empty file | closed |
 | **#229** | FFmpeg's progress percentage is computed everywhere and asserted nowhere | closed |
