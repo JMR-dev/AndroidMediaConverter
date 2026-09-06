@@ -384,8 +384,26 @@ disable_region_sampling() {
   fi
 
   echo "  restarting the framework so the region-sampling listener goes with it"
-  emu_adb shell stop > /dev/null 2>&1
-  emu_adb shell start > /dev/null 2>&1
+  # `adb root` first, and the two redirects below used to hide why. `stop` and `start` are
+  # root-only, adbd is not root on a booted emulator, and both were answering `Must be root`
+  # into /dev/null -- so this restarted nothing, here and in both CI copies, for as long as
+  # any of them has existed (2026-09-05). Measured on a local android-37.0 AVD: `stop` alone
+  # says `Must be root`; after `adb root`, `whoami` says root, `stop` returns 0 and
+  # `pidof system_server` comes back empty.
+  #
+  # Read the abort table in docs/api-37-emulator-crash.md with that in mind: on API 37 the
+  # image restarts its own framework every minute or so, and a restart AFTER a successful
+  # `pm disable-user` brings back a SystemUI-less zygote by itself. That is the likeliest
+  # reason the disable appeared to work here while doing nothing on CI's much quieter
+  # swiftshader legs, where the logcat shows SystemUI alive for the whole run.
+  #
+  # Output is kept rather than discarded now, for the same reason.
+  emu_adb root > /dev/null 2>&1
+  emu_adb wait-for-device
+  emu_adb shell stop 2>&1 | sed 's/^/  stop: /'
+  emu_adb shell start 2>&1 | sed 's/^/  start: /'
+  emu_adb unroot > /dev/null 2>&1
+  emu_adb wait-for-device
   # There is no property worth waiting on here, and an earlier version of this only looked
   # like it was waiting on one: `stop` does not clear sys.boot_completed, so it still reads
   # `1` throughout the restart and any loop over it returns at once. The loop below is the

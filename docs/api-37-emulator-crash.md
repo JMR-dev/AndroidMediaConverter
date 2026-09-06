@@ -315,7 +315,19 @@ clean zero. Its own post-disable check on the run recorded below printed
 
 So what is reliably achieved is a **rate collapse** — from roughly one abort every fourteen
 seconds to one every forty-five — which a 47-second Gradle run survives and a five-minute one
-might not. The 180-second zero above is one measurement on a device that had been up for twelve
+might not.
+
+**Read every number in this section knowing that the restart it credits was not happening.**
+Found 2026-09-05: `stop` and `start` are root-only, adbd was not root in any of the three copies
+of this logic, and `run-e2e.sh` sent both to `/dev/null`, so its `Must be root` was never even
+printed. What the local runs almost certainly had instead is the image restarting its own
+framework — on API 37 that happens every minute or so — and a restart landing after a successful
+`pm disable-user` brings back a SystemUI-less zygote by itself. That would produce exactly the
+rate collapse recorded above, by accident and on the image's schedule rather than the harness's,
+which also explains why the same code bought nothing at all on CI's far quieter
+`swiftshader_indirect` legs: there the logcat shows SystemUI alive for the whole run. The
+measurements above are still what was observed; what they are evidence *of* is narrower than it
+was written to be. All three copies now take root. The 180-second zero above is one measurement on a device that had been up for twelve
 minutes and had already cycled its framework several times. The harness prints the quiet-check
 delta on every run precisely so this is visible rather than assumed.
 
