@@ -332,8 +332,23 @@ install for code that can never run — and on API 37 the full APK does not fit 
   without the pin they would fail loudly; `HardwareFallbackTest`'s are about the *output*, so it
   passes quietly. **Prefer asserting the path over asserting the artefact** where the two differ.
 
-  The read was a triage, not a test push, and five of its six findings are prose rather than code —
+  The read was a triage, not a test push, and six of its seven findings are prose rather than code —
   the suite itself is in good shape. What had drifted is its self-description.
+
+  **Working the tickets then found the thing the read could not: one production defect.** #238 —
+  joining files picked through the system picker failed outright on the stream-copy path. The
+  concat demuxer whitelists protocols separately from `-safe 0`, and `ffkitsaf` was not on the
+  list; only `STREAM_COPY` feeds it a list file, and every existing join test passed
+  `Uri.fromFile`, so **the one broken combination was the only one a user could reach**. Not a
+  missed line and not an unasserted value — two covered things no test put together, which is the
+  gap shape a coverage number is worst at.
+
+  **E7 is the other reusable result**, because it re-scoped its own ticket. A real
+  `DocumentsProvider` cannot be reached without the picker: an unprotected one is refused at
+  install, instrumentation runs in the app's uid so the test APK's identity is no help, and shell
+  identity is denied too — each denial naming `ACTION_OPEN_DOCUMENT`. So #226 has no cheap headless
+  half. But the *input* bridge needs no documents provider at all, which is what kept #225 headless
+  and is how #238 surfaced.
 
 - **Testable code is not done until it is tested.** If a piece is unit testable, it gets unit
   tests before it counts as done. If it is e2e testable, it gets e2e tests. Both clauses apply —
