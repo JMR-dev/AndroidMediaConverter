@@ -17,6 +17,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -229,52 +230,76 @@ class FFmpegEngineTest {
      *
      * ## Why it cancels on RUNNING rather than on the first progress callback
      *
-     * Measured, and this is the part worth keeping. Cancelling from the first `onProgress` was
-     * tried first and **failed on a local API 34 emulator with `state=COMPLETED rc=0`** — every
-     * committed fixture is 2-3 s at 320x240, and the encode finishes before the first statistics
-     * callback has been delivered and acted on. The progress callback is proof the session is
-     * running, but it arrives too late to interrupt anything.
+     * Measured. Cancelling from the first `onProgress` was tried first and **failed on a local API
+     * 34 emulator with `state=COMPLETED rc=0`** — every committed fixture is 2-3 s at 320x240, and
+     * the encode finishes before the first statistics callback has been delivered and acted on. The
+     * progress callback proves the session is running, but arrives too late to interrupt anything.
+     * `FFmpegKit.listSessions` shows the session [SessionState.RUNNING] far earlier.
      *
-     * `FFmpegKit.listSessions` shows the session as [SessionState.RUNNING] far earlier, so that is
-     * what is waited on. `QualityTier.BEST` is deliberate for the same reason: `-preset medium`
-     * leaves more of the encode ahead of the cancel than `veryfast` would.
+     * ## Why it retries, which is the part that took two attempts to get right
      *
-     * The session is identified by diffing against the ids present before the run, because this
-     * class has already produced eight of them by the time this executes.
+     * Waiting for `RUNNING` is not on its own enough. With `MP4_H265` at [QualityTier.BEST] this
+     * passed four consecutive local runs and all five CI legs, then failed on the API 34 and 35 legs
+     * of the next PR with `state=COMPLETED rc=0`. Nothing had changed: on a loaded runner the thread
+     * that observed `RUNNING` can be descheduled long enough for a short encode to finish before it
+     * calls `cancel`. A longer timeout does not help — the wait already succeeded.
+     *
+     * Two changes together, because neither is sufficient:
+     *
+     *  - **A slower encode.** `WEBM_VP9` at `BEST` is the slowest thing this builder emits:
+     *    `libvpx-vp9 -crf 31 -b:v 0`, with `-deadline realtime` added **only** on
+     *    [QualityTier.FAST]. Probed on an API 34 emulator, that session is still `RUNNING` at 1 s
+     *    and finished by 2 s, against well under a second for x265 `-preset medium`.
+     *  - **Retrying the attempt.** An attempt whose session finished before the cancel landed has
+     *    not tested anything, so it is not a failure — it is a miss, and it is retried. Only
+     *    exhausting [CANCEL_ATTEMPTS] is a failure, and its message says which case it hit.
+     *
+     * That keeps the mutation honest: with `FFmpegKit.cancel` removed **every** attempt ends
+     * `COMPLETED`, so the test still fails — it just takes [CANCEL_ATTEMPTS] tries to say so.
+     *
+     * The session is identified by diffing against the ids present before each attempt, because
+     * this class has already produced eight of them by the time this executes.
      */
     @Test
     fun cancellingARunningConversionCancelsTheNativeSession(): Unit = runBlocking {
-        val before = FFmpegKit.listSessions().map { it.getSessionId() }.toSet()
-        val out = outputFor("out_cancelled.mp4")
+        val outcomes = mutableListOf<String>()
 
-        val job = launch(Dispatchers.IO) {
-            engine.run(
-                request = ConversionRequest(spec = OutputFormat.MP4_H265.spec, quality = QualityTier.BEST),
-                inputPath = input.absolutePath,
-                output = out,
-                durationMs = 3_000,
-            )
-        }
+        repeat(CANCEL_ATTEMPTS) { attempt ->
+            val before = FFmpegKit.listSessions().map { it.getSessionId() }.toSet()
+            val out = outputFor("out_cancelled_$attempt.webm")
 
-        // Interrupt as early as the session can be observed at all. See the KDoc: waiting for
-        // progress instead lost the race outright.
-        val ours = withTimeout(TIMEOUT_MS) {
-            var found: FFmpegSession? = null
-            while (found?.getState() != SessionState.RUNNING) {
-                found = FFmpegKit.listSessions().firstOrNull { it.getSessionId() !in before }
-                if (found?.getState() != SessionState.RUNNING) delay(POLL_MS)
+            val job = launch(Dispatchers.IO) {
+                engine.run(
+                    // The slowest target this builder emits -- see the KDoc. Not decoration:
+                    // with a faster one this loses the race on a loaded CI runner.
+                    request = ConversionRequest(spec = OutputFormat.WEBM_VP9.spec, quality = QualityTier.BEST),
+                    inputPath = input.absolutePath,
+                    output = out,
+                    durationMs = 3_000,
+                )
             }
-            found
-        }
-        job.cancelAndJoin()
 
-        withTimeout(TIMEOUT_MS) {
-            while (ours.getState() == SessionState.RUNNING) delay(POLL_MS)
+            val ours = withTimeout(TIMEOUT_MS) {
+                var found: FFmpegSession? = null
+                while (found == null) {
+                    found = FFmpegKit.listSessions().firstOrNull { it.getSessionId() !in before }
+                    if (found == null) delay(POLL_MS)
+                }
+                found
+            }
+            job.cancelAndJoin()
+            withTimeout(TIMEOUT_MS) {
+                while (ours.getState() == SessionState.RUNNING) delay(POLL_MS)
+            }
+
+            if (ReturnCode.isCancel(ours.getReturnCode())) return@runBlocking
+            // The encode beat us to it. That attempt proved nothing either way, so try again.
+            outcomes += "state=${ours.getState()} rc=${ours.getReturnCode()}"
         }
 
-        assertTrue(
-            "the native session was not cancelled: state=${ours.getState()} rc=${ours.getReturnCode()}",
-            ReturnCode.isCancel(ours.getReturnCode()),
+        fail(
+            "never interrupted a running session in $CANCEL_ATTEMPTS attempts, so either every " +
+                "encode finished first or cancellation does not reach it: $outcomes",
         )
     }
 
@@ -320,5 +345,14 @@ class FFmpegEngineTest {
         /** Generous: it bounds a hang, and every wait here normally settles in well under a second. */
         const val TIMEOUT_MS = 30_000L
         const val POLL_MS = 50L
+
+        /**
+         * How many times to try to catch the session mid-encode.
+         *
+         * Each miss costs about the length of one VP9 encode -- a second or two -- and a miss is
+         * the loaded-runner case rather than a defect. Five is enough that exhausting them means
+         * cancellation is not reaching the session, which is what the failure message says.
+         */
+        const val CANCEL_ATTEMPTS = 5
     }
 }
