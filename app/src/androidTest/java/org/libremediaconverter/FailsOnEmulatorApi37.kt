@@ -54,13 +54,18 @@ annotation class FailsOnEmulatorApi37
  * **The fourth carrier is the one to read that sentence carefully for.**
  * `pickingAFileThroughTheSystemPickerFillsInTheFileCard` was marked on 2026-09-05 for aborting
  * `system_server` rather than for failing (#108), and on the gating leg it passed two runs of
- * four. The count still holds on the advisory leg, and that was **measured rather than assumed**:
- * `api37-debug.yml` run 34008889182, dispatched with this annotation as its filter, reports
- * `expected: 4, received: 4, failed: 4` (and `completed cleanly: no`, which is this job's normal).
- * It fails there because it runs alongside the rotation test, which takes the framework down first
- * — so the reason this line did not have to become two numbers is a property of the advisory leg,
- * not of the test. If it ever reports three failures out of four, read that as this test having
- * got lucky rather than as an image that improved.
+ * four. It fails on the advisory leg because the rotation test runs before it and takes the
+ * framework down first — measured, `api37-debug.yml` run 34008889182, which reports
+ * `expected: 4, received: 4, failed: 4` with the four in the order Media3, Media3, rotation,
+ * picker.
+ *
+ * **But a second dispatch of the identical configuration reported 4/3/3**, having lost the last
+ * test to the abort rather than to anything about the test list, and that is why
+ * `e2e-report-shape.sh` compares `failed` only on a run that finished. `expected` is compared
+ * always — it comes from `Starting N tests`, which is printed before anything can abort, so it is
+ * the field that answers "is the marked set the size this number says". Read a *clean* run
+ * reporting fewer failures than this as one of them now passing; read a truncated one as the
+ * framework having died, which is this job's normal.
  *
  * So: adding or removing a [FailsOnEmulatorApi37] means changing this number, in this file, in
  * the same diff. The report says so on the run itself if you forget — it prints the tree's own
