@@ -44,9 +44,27 @@ cd "$REPO_ROOT" || exit 1
 
 MODE="$(basename "$0")"
 ZERO="0000000000000000000000000000000000000000"
-CACHE_DIR=".git/lmc-verify"
+# `git rev-parse --git-common-dir`, not a literal ".git" (#258). In a linked worktree `.git` is a
+# FILE containing `gitdir: ...`, so `mkdir -p .git/lmc-verify` fails with "Not a directory" -- and
+# because the write is the last thing this script does, it failed while the gate still printed
+# green and exited 0. Every push from a worktree then re-swept 33-36 for nothing, silently, which
+# is the worst shape a cache can fail in: invisible and expensive.
+#
+# --git-common-dir rather than --git-dir so the cache is SHARED across worktrees. The key is the
+# app/src tree hash, and identical content is identical content whichever worktree produced it.
+CACHE_DIR="$(git rev-parse --git-common-dir)/lmc-verify"
 GRADLE_GATE=(:app:assembleDebug :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin
   :app:ktlintCheck :app:detekt :app:lintDebug)
+
+# Says so when it cannot record, rather than leaving a cache that silently never fills (#258).
+record_sweep() {
+  [ -n "$tree" ] || return 0
+  if mkdir -p "$CACHE_DIR" 2>/dev/null && : > "$CACHE_DIR/$tree" 2>/dev/null; then
+    return 0
+  fi
+  printf '\n\033[1m[local-gate]\033[0m could not record the sweep under %s -- it will re-run next
+  time. Not fatal, but it means every commit and push pays for it again.\n' "$CACHE_DIR"
+}
 
 say() { printf '\n\033[1m[local-gate]\033[0m %s\n' "$*"; }
 die() {
@@ -180,7 +198,7 @@ fi
 
 if [ "$touches_source" -eq 0 ] && [ "$touches_tests" -eq 0 ]; then
   say "no app/src changes; the instrumented sweep is not required for this one"
-  mkdir -p "$CACHE_DIR" && [ -n "$tree" ] && : > "$CACHE_DIR/$tree"
+  record_sweep
   exit 0
 fi
 
@@ -223,7 +241,7 @@ else
   attach the Pixel 10 Pro XL to have this hook cover it too."
 fi
 
-mkdir -p "$CACHE_DIR" && [ -n "$tree" ] && : > "$CACHE_DIR/$tree"
+record_sweep
 # Name the levels rather than claiming "every supported level". The first cut said the latter on
 # both paths, including the one that had just printed NOT COVERED two lines above -- a false claim
 # printed by the tool whose whole job is to stop false claims reaching CI.
