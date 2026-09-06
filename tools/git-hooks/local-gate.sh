@@ -144,11 +144,13 @@ while read -r serial state; do
   break
 done < <(adb devices 2>/dev/null | tail -n +2)
 
+levels="33, 34, 35, 36"
 if [ -n "$device" ]; then
   say "API 37 on the attached device $device"
   if ! ANDROID_SERIAL="$device" ./gradlew :app:connectedDebugAndroidTest -PabiFilters=arm64-v8a; then
     die "the instrumented suite is not green on API 37 (device $device)."
   fi
+  levels="$levels, 37"
 else
   say "NOT COVERED LOCALLY: API 37. No API 37 device is attached, and the API 37 emulator cannot
   install the APK on this host (see this script's header). CI's gating leg is what answers for it;
@@ -156,5 +158,8 @@ else
 fi
 
 mkdir -p "$CACHE_DIR" && [ -n "$tree" ] && : > "$CACHE_DIR/$tree"
-say "green at every supported API level; $MODE allowed"
+# Name the levels rather than claiming "every supported level". The first cut said the latter on
+# both paths, including the one that had just printed NOT COVERED two lines above -- a false claim
+# printed by the tool whose whole job is to stop false claims reaching CI.
+say "green on API $levels; $MODE allowed"
 exit 0
