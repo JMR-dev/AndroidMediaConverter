@@ -42,6 +42,28 @@
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
             </intent-filter>
         </provider>
+
+        <!--
+          A PLAIN provider, for the ffkitsaf bridge on the success path.
+
+          FFmpegKitConfig.getSafParameterForRead is on every real user conversion and was on no
+          passing test: they all pass Uri.fromFile, which takes the other arm. Only its failure
+          side was covered, by UnopenableUriTest naming an authority that does not exist.
+
+          The documents provider above cannot serve this. Any DOCUMENTS_PROVIDER must hold
+          MANAGE_DOCUMENTS or the platform refuses to install it, instrumentation runs in the
+          target app's process and so carries the app's uid, and the resulting denial says what
+          is actually required: access obtained through ACTION_OPEN_DOCUMENT. That means a picker,
+          and the flake it brings. See issue #226.
+
+          The bridge does not need a documents provider. It opens a descriptor through the
+          resolver and hands FFmpeg a saf: path, so any readable content:// URI exercises it, and
+          an ordinary provider is allowed to be exported without a permission.
+        -->
+        <provider
+            android:name="org.libremediaconverter.saf.FixtureContentProvider"
+            android:authorities="org.libremediaconverter.test.content"
+            android:exported="true" />
     </application>
 
 </manifest>
