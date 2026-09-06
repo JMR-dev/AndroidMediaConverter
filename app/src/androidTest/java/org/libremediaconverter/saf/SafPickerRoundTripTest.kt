@@ -686,9 +686,19 @@ class SafPickerRoundTripTest {
      * fails, and then it does not run at all — measured too, on the mutation run that proved this
      * suite bites: one real failure became two, and the second looked like an unrelated flake.
      * **One cause must produce one red test**, so the cleanup belongs where it runs either way.
+     *
+     * **`pruneWork` and not `cancelAllWork`, on design grounds and not on a measurement.** Only
+     * finished work records need to go — that is all the next launch reattaches to — and
+     * `cancelAllWork` additionally cancels live work, which is a wider blast radius than teardown
+     * in a shared process needs. `pruneWork` cannot touch a job that has not run yet.
+     *
+     * `cancelAllWork` was **suspected** of causing an API 35 red here and did not cause it; see
+     * [CONVERSION_TIMEOUT_MS], which did. A local API 35 run with `cancelAllWork` passed, and the
+     * logcat showed the conversion encoding rather than cancelled. The narrower call is kept
+     * because it is the right one, not because it fixed anything.
      */
     private fun clearFinishedWork() {
-        WorkManager.getInstance(context).cancelAllWork()
+        WorkManager.getInstance(context).pruneWork()
         File(context.cacheDir, "conversions").listFiles()?.forEach { it.delete() }
     }
 
@@ -1211,13 +1221,22 @@ class SafPickerRoundTripTest {
         const val PERMISSION_DIALOG_MS = 5_000L
 
         /**
-         * Only bounds a hang, and it is an order of magnitude clear of the real cost: the whole
-         * test — pick, convert, save — takes **11.8 s** on the API 34 CI leg (run 34043502322).
-         * Deliberately generous because the engine is not fixed: the default `MP4_H265` at `FAST`
-         * lands on FFmpeg on an emulator and on Media3 on real hardware, which is faster rather
-         * than slower — see [convertToTheDefaultFormat].
+         * Bounds a hang, and **the first number here was measured on one API level and wrong on
+         * another.** It read 120 s, on the strength of the whole test taking 11.8 s on the API 34
+         * CI leg (run 34043502322). API 35 is a different machine: on run 34056545386 the fixture's
+         * `libx265 -crf 24 -preset veryfast` encode started at `20:05:26.897` and the next job in
+         * the suite did not appear until `20:07:41.693` — **134.8 s**, so the encode was still
+         * running when the 120 s bound expired and the test failed with the conversion healthy.
+         *
+         * The logcat is what settles it: `ConversionWorker` logs the route and `FFmpegEngine` the
+         * command, and there is no cancel between them. A timeout that fires on a working
+         * conversion is worse than no bound, because it reads as a product failure.
+         *
+         * 300 s is chosen against that 134.8 s, not against API 34's 11.8 s. **Do not re-tighten
+         * it from a fast leg's timing** — the encode is software on every emulator here, and the
+         * spread between images is larger than any margin a single measurement would suggest.
          */
-        const val CONVERSION_TIMEOUT_MS = 120_000L
+        const val CONVERSION_TIMEOUT_MS = 300_000L
 
         /** The copy is a few kilobytes, but it crosses a provider. */
         const val SAVE_TIMEOUT_MS = 30_000L
