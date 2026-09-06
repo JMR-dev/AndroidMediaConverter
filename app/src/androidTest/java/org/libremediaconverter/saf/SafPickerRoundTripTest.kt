@@ -1198,9 +1198,35 @@ class SafPickerRoundTripTest {
         }
     }
 
+    /**
+     * Waits for [tag], treating "the app has no composition right now" as *not yet* rather than
+     * as a failure.
+     *
+     * `fetchSemanticsNodes` **throws** `IllegalStateException: No compose hierarchies found in the
+     * app` when nothing is attached at that instant, and `waitUntil` propagates it on the first
+     * poll instead of waiting out the deadline. This class spends much of its time with another
+     * app in front — the picker, the create-document dialog, the permission dialog — so there is
+     * always a window where the app is coming back and has no composition yet. Before this, that
+     * window was a hard failure: measured on the API 34 leg of run 34057196628, where **both** SAF
+     * tests died that way while the same commit passed API 33, 35, 36 and 37, and the previous
+     * commit passed API 34 and failed 35. A failing leg that moves between runs is #190's
+     * emulator flake, and this is the one place in the class that turned it into a red test.
+     *
+     * **The cost is honest and bounded**: an app that is genuinely gone now fails at the deadline
+     * rather than immediately, so the last composition error is carried into the message to keep
+     * that case diagnosable.
+     */
     private fun awaitNode(tag: String, timeoutMs: Long = APP_TIMEOUT_MS) {
-        composeRule.waitUntil("a node tagged $tag exists", timeoutMs) {
-            composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+        var lastError: Throwable? = null
+        try {
+            composeRule.waitUntil("a node tagged $tag exists", timeoutMs) {
+                runCatching { composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
+                    .onFailure { lastError = it }
+                    .getOrDefault(false)
+            }
+        } catch (timeout: ComposeTimeoutException) {
+            val note = lastError?.let { "; last composition error: ${it.message}" } ?: ""
+            throw AssertionError("waited ${timeoutMs}ms for a node tagged $tag$note", timeout)
         }
     }
 

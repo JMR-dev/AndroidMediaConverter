@@ -399,6 +399,33 @@ install for code that can never run — and on API 37 the full APK does not fit 
   mode, committed by the wave that found it.** All of it is fixed; the standing item is **#250**,
   because #226 proved D4's premise and never drove its delete arm.
 
+- **Nothing is committed or pushed until the local gate is green, at every supported API level.**
+  Source work (`app/src/main`) needs the unit tests **and** the instrumented tests passing on every
+  level; test work (`app/src/test`, `app/src/androidTest`) needs the whole suite passing on every
+  level. `tools/git-hooks/local-gate.sh` enforces it as `pre-commit` and `pre-push`; wire it up once
+  with `git config core.hooksPath tools/git-hooks`.
+
+  33-36 run the whole suite on emulators. **API 37 cannot be run on an emulator on this host at
+  all** — not "is red", *cannot run*: measured 2026-09-06, the image logs `3 new surfaceflinger
+  aborts in 45 s (want 0)` and then the APK install itself fails with `Can't find service:
+  package`, because the framework is gone before Gradle installs anything. `Starting 0 tests`. So
+  the hook runs API 37 on the **attached Pixel 10 Pro XL** when it is there, and says plainly that
+  the level is uncovered when it is not — CI's gating leg being what answers for it then. It never
+  claims five levels having run four.
+
+  The sweep is cached under the hash of the **`app/src` subtree**, not the whole repo tree. Keying
+  it on the whole tree was the first cut and it was wrong: editing a comment in `CLAUDE.md` threw
+  away a sweep of byte-identical application code and re-ran forty minutes of emulators to prove
+  nothing, which is how a gate teaches people to resent it. Any change under `app/src` still
+  invalidates it, and the JVM gate runs unconditionally. **There is deliberately no skip
+  variable**, and `--no-verify` needs the repo owner's say-so each time rather than being reached
+  for when the gate is inconvenient.
+
+  Why it is worth tens of minutes a commit: the alternative was measured on 2026-09-06, when one PR
+  spent several gating legs learning one leg at a time what a sweep answers in one pass — and the
+  failing leg **moved** between runs (API 35 red then green, API 34 green then red). One leg at a
+  time that reads as someone else's flake; as a sweep it is one signal.
+
 - **Testable code is not done until it is tested.** If a piece is unit testable, it gets unit
   tests before it counts as done. If it is e2e testable, it gets e2e tests. Both clauses apply —
   a change that is both needs both.
