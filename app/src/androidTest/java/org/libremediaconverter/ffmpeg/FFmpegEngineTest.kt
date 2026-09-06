@@ -113,6 +113,11 @@ class FFmpegEngineTest {
     fun encodesFlacLosslessAudio() {
         val out = convert(OutputFormat.FLAC)
         assertTrue("no FLAC produced", out.exists() && out.length() > 0)
+        // "fLaC", the native FLAC stream marker. Without this the test passed on any non-empty
+        // file, so a builder arm emitting the wrong encoder into a .flac name shipped green
+        // (#228) -- the same shape the five assertions above already guard against.
+        val magic = out.inputStream().use { String(it.readNBytes(4), Charsets.US_ASCII) }
+        assertEquals("fLaC", magic)
     }
 
     @Test
@@ -127,6 +132,11 @@ class FFmpegEngineTest {
     fun encodesOpus() {
         val out = convert(OutputFormat.OPUS)
         assertTrue("no Opus produced", out.exists() && out.length() > 0)
+        // OutputFormat.OPUS is Container.OGG, so the file is an Ogg stream: "OggS" (#228).
+        // Deliberately the container marker rather than the codec -- it is what the other
+        // container-level assertions in this class check, and it is four bytes at offset 0.
+        val magic = out.inputStream().use { String(it.readNBytes(4), Charsets.US_ASCII) }
+        assertEquals("OggS", magic)
     }
 
     // --- the quality tier the GPL licence was taken for --------------------
