@@ -437,3 +437,81 @@ green on `main`.
 the same wave, and the tests it writes are no more self-describing than the ones it audited. The
 check that found it is the one this document already recommends: **read the KDoc against the code,
 not against the ticket.**
+
+## E8 — the instrumented suite's coverage, measured for the first time
+
+**Severity: n/a · Measured 2026-09-06 on API 34 · the number had never existed**
+
+Four coverage waves were steered by a figure that cannot see `app/src/androidTest`. Nothing had
+ever produced the other half, because `enableAndroidTestCoverage` was unset, so a connected run
+emitted no `.ec` at all and `jacocoTestReport`'s execution data names only `testDebugUnitTest`.
+
+Measured by setting that flag temporarily, running `run-e2e.sh 34` (70/70, 0 failed, 3m21s — the
+instrumentation destabilised nothing), and reporting the resulting `.ec` against the **same** class
+directories and exclusions the committed task uses:
+
+| suite | line | branch |
+|---|---|---|
+| JVM `testDebugUnitTest` | 2236/2374 — **94.2%** | 1171/1338 — **87.5%** |
+| Instrumented, 70 tests | 1711/2374 — **72.1%** | 669/1354 — **49.4%** |
+| **Union** | 2342/2374 — **98.7%** | 1212/1354 — **89.5%** |
+
+The JVM row reproduced the committed figure exactly, which is the control: both exec sets match the
+current class files, so the union is trustworthy.
+
+**Two caveats before anyone quotes these.** Branch denominators differ by 16 — 1338 against 1354 —
+entirely inside `MediaProbe`, an artefact of offline versus on-the-fly instrumentation; line
+denominators are identical at 2374, so only the line figures compare exactly. And **72.1% is not a
+grade for the instrumented suite.** Seventy end-to-end tests reach code broadly and choose arms
+rarely; a branch figure of 49.4% is what that shape looks like. This whole document exists because
+the gaps that mattered — #223's vacuous assertions, #238's two covered things nobody combined —
+are invisible to any percentage.
+
+### What the device suite is for, in numbers
+
+It closes **106 lines** the JVM suite misses, and they are precisely the ones wave 4 wrote off:
+
+| file | JVM missed | union missed |
+|---|---|---|
+| `FFmpegEngine.kt` | 32 | **0** |
+| `Media3Engine.kt` | 24 | **0** |
+| `ConcatEngine.kt` | 15 | **0** |
+| `MediaProbe.kt` | 13 | **3** |
+| `MainActivity.kt` | 10 | **1** |
+| `AndroidDeviceCodecs.kt` | 8 | **0** |
+| `Transcoders.kt` | 10 | 3 |
+
+CLAUDE.md's wave-4 read called 81 lines "native or device edges" — `FFmpegEngine` 33,
+`Media3Engine` 24, `ConcatEngine` 14, `MainActivity.onCreate` 10. The first four rows above total
+**81**, and the union leaves **1**. That **confirms** the read's own hypothesis rather than
+overturning it: it always said those zeroes were "the `testDebugUnitTest`-only measurement
+boundary". Nobody had measured past the boundary. `AndroidDeviceCodecs` is the pointed one — #194
+was filed to cut a seam because `probe()` could not be reached, and on a device it is fully covered.
+
+### The 32 lines neither suite reaches, classified
+
+Every one was read. **None of them is an e2e test gap**, which is the result:
+
+| lines | where | classification |
+|---|---|---|
+| 9 | `Transcoders` ×3, `ConversionViewModel`, `ConverterScreen`, `JoinViewModel`, `JoinScreen`, `MainActivity`, `Reattachment` | **compiler-generated** — default-arg `$default` bridges, coroutine completion, the synthetic `NoWhenBranchMatchedException` arm of a `when` over `Destination` |
+| 10 | `ConversionWorker:342-346`, `ConcatWorker:132-136` | `getForegroundInfo()` — WorkManager's **expedited-work** hook, and nothing here enqueues expedited work. The live path is `setForeground(foregroundInfo(...))`, which is covered. **#252** |
+| 3 | `ConversionNotifications:60-62` | **F5** — `areEnabled()` has no callers. Already on record |
+| 3 | `CopyPlanner:28`, `OutputFormat:222-223` | public members with no callers. **#253**, with F5 |
+| 3 | `MediaProbe:210-212` | `probeWithFFprobe`'s `catch` — **F7's sibling, and now measured**. See below |
+| 2 | `FFmpegCommandBuilder:167-168` | `COPY`/`NONE -> error(...)` — F4-shaped, deliberately exempt |
+| 1 | `FFmpegCommandBuilder:188` | the `VORBIS` encode arm. No `OutputFormat` produces it, but `ContainerCapabilities` lists it for WEBM and OGG. **#254** |
+| 1 | `ConversionWorker:231` | `?: error("Could not open the input file.")`. `UnopenableUriTest` fails the job *downstream* of it, so the elvis is unprovoked — F4-shaped, same as the two above |
+
+**`MediaProbe:210-212` is the one that gained a measurement.** F7 ruled `probeWithExtractor`'s catch
+unreachable because Robolectric's `MediaExtractor` never throws. That reasoning does not transfer:
+`probeWithFFprobe` calls `readMediaInformation` in native ffmpeg-kit, which the JVM never loads.
+But `MediaProbe.probe` calls **both** probes on one line, and
+`RemuxTest.probeDistinguishesAudioFromImagesFromRubbish` drives it on a device with 4096 bytes of
+garbage — so the ffprobe path *has* been given malformed input on real hardware and **did not
+throw**. Same conclusion as F7, reached by a different mechanism, and now on record rather than
+assumed.
+
+**The reusable part**: a union report is what separates "no test calls this" from "only a device
+calls it", and neither report alone can. Six of the eight rows above were indistinguishable from
+real gaps in the JVM-only number.
