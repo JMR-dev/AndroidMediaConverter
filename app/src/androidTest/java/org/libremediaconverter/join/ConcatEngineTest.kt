@@ -15,6 +15,7 @@ import org.junit.runner.RunWith
 import org.libremediaconverter.convert.MediaProbe
 import org.libremediaconverter.convert.StagingNames
 import org.libremediaconverter.ffmpeg.ConcatEngine
+import org.libremediaconverter.ffmpeg.FFmpegEngine
 import org.libremediaconverter.model.ConcatStrategy
 import java.io.File
 
@@ -146,6 +147,55 @@ class ConcatEngineTest {
         assertTrue(
             "expected an IllegalArgumentException, got $failure",
             failure is IllegalArgumentException,
+        )
+    }
+
+    /**
+     * A failed join tells the user the return code and what FFmpeg said.
+     *
+     * **This is the device half of #203/#217**, whose PR closed by noting the join legs had not
+     * been run. Running them would not have answered it: nothing on either source set drove a real
+     * join *failure*, so the unified message was asserted only against values a JVM test hands to
+     * `sessionOutcome` directly.
+     *
+     * What is device-only here is that the three reads behind that message work against a real
+     * native session at all — `getReturnCode`, `getFailStackTrace` and `getAllLogsAsString`. If
+     * the log tail came back null or empty on a device, the user would get `Joining failed (1): `
+     * with nothing after the colon and every JVM test would still pass.
+     *
+     * **What this deliberately does not pin is the preference between the two detail sources.** On
+     * an ordinary non-zero return code FFmpegKit reports no fail stack trace, so the stack-trace-
+     * first rule and the log-tail-first rule produce the same text and no assertion here can tell
+     * them apart. That ordering is [SessionOutcomeTest][org.libremediaconverter.ffmpeg.SessionOutcomeTest]'s
+     * job, where both sources can be non-blank at once. Asserting it here would be a test whose
+     * KDoc claims more than it checks — the `probeForConcat` mistake wave 3 caught.
+     *
+     * The failure is forced with an input that does not exist, which the concat demuxer rejects
+     * the same way on every FFmpeg build, rather than with malformed media whose handling varies.
+     */
+    @Test
+    fun aFailedJoinReportsTheReturnCodeAndWhatFFmpegSaid(): Unit = runBlocking {
+        val missing = File(context.cacheDir, "no_such_clip.mp4").also { it.delete() }
+        val out = output("joined_failure.mp4")
+
+        val failure = runCatching {
+            engine.join(listOf(Uri.fromFile(clipA), Uri.fromFile(missing)), out)
+        }.exceptionOrNull()
+
+        assertTrue(
+            "a join over a missing input must fail, got $failure",
+            failure is FFmpegEngine.FFmpegException,
+        )
+        val message = failure?.message.orEmpty()
+        assertTrue(
+            "the message must name the operation and carry the return code, was: '$message'",
+            message.startsWith("Joining failed ("),
+        )
+        // The half a JVM test cannot reach: a real session actually produced detail to show.
+        val detail = message.substringAfter("): ", "")
+        assertTrue(
+            "the message stopped at the return code and told the user nothing, was: '$message'",
+            detail.isNotBlank(),
         )
     }
 
