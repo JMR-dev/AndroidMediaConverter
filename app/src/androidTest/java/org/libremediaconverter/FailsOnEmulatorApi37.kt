@@ -79,9 +79,10 @@ annotation class FailsOnEmulatorApi37
  * framework having died, which is this job's normal.
  *
  * **That is no longer what happens, and the difference is that neither picker test reports at
- * all.** With six carriers the rotation test truncates the run before them: both advisory runs
- * since #226 landed — 34042397320 and 34043502322 — report `expected: 6, received: 4`, and the
- * four are the three Media3 tests plus the rotation. So the advisory leg currently answers for
+ * all.** With six carriers the rotation test truncates the run before them: **all four** advisory
+ * runs at this baseline — 34041156680, 34041593697, 34042397320 and 34043502322 — report
+ * `expected: 6, received: 4, failed: 4`, and the four are the three Media3 tests plus the
+ * rotation. So the advisory leg currently answers for
  * four of its six, and the comparison below is unaffected only because `failed` is not compared
  * on a truncated run. Read it as **unmeasured**, not as passing or failing.
  *

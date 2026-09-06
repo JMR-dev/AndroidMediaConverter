@@ -277,7 +277,7 @@ jobs:
           # leg; four gating logcats read on 2026-09-05 show it aborting system_server
           # from the task-snapshot path on every single run, pass or fail, which is what
           # had been failing unrelated PRs (#108). All THREE of that class's tests now
-          # carry the marker -- the save through the picker (#226) joined on 2026-09-05
+          # carry the marker -- the save through the picker (#226) joined on 2026-09-06
           # by inheritance rather than measurement, since it opens the same picker.
           # docs/api-37-emulator-crash.md has the timings and the correction, and
           # FailsOnEmulatorApi37.kt has why the third one cannot be measured here.
@@ -293,8 +293,9 @@ jobs:
           # notAnnotation removes the six tests that cannot be RUN on this image; they
           # run in the advisory job below, off the same marker so they cannot end up
           # in both or neither. "Cannot be run" rather than "do not pass" is deliberate:
-          # two of the six abort the framework rather than failing, and two never report
-          # at all. docs/api-37-emulator-crash.md has the measurements.
+          # four fail outright, one of those aborts the framework on its way down, and on
+          # the advisory leg the two picker tests behind it never report at all.
+          # docs/api-37-emulator-crash.md has the measurements.
           - label: "37"
             api-level: "37.0"
             disable-system-ui: "1"

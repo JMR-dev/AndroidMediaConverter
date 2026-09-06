@@ -534,8 +534,8 @@ class SafPickerRoundTripTest {
      * [pickingAFileThroughTheSystemPickerFillsInTheFileCard], which was marked for aborting
      * `system_server` from the task-snapshot path (#108), and then a second DocumentsUI dialog on
      * top of it. It has never been observed at API 37 either way: the rotation test truncates the
-     * advisory run first, so both advisory runs since this landed report `expected: 6, received: 4`
-     * without reaching either picker test. Marking it was the conservative choice and it is
+     * advisory run first, so all four advisory runs at this baseline report
+     * `expected: 6, received: 4` without reaching either picker test. Marking it was the conservative choice and it is
      * recorded as unmeasured in `FailsOnEmulatorApi37.kt` rather than dressed up as a measurement.
      */
     @Test
@@ -1080,7 +1080,7 @@ class SafPickerRoundTripTest {
         const val PERMISSION_DIALOG_MS = 5_000L
 
         /**
-         * Only bounds a hang, and it is two orders of magnitude clear of the real cost: the whole
+         * Only bounds a hang, and it is an order of magnitude clear of the real cost: the whole
          * test — pick, convert, save — takes **11.8 s** on the API 34 CI leg (run 34043502322).
          * Deliberately generous because the engine is not fixed: the default `MP4_H265` at `FAST`
          * lands on FFmpeg on an emulator and on Media3 on real hardware, which is faster rather

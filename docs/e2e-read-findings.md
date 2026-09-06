@@ -423,8 +423,9 @@ green on `main`.
   found it** — a passing test with a wrong explanation.
 - **Neither picker test has ever reported on the advisory leg.** The marker's KDoc said the picker
   test *fails* there behind the rotation test; with six carriers the rotation test truncates the run
-  first, and both advisory runs since #226 (`34042397320`, `34043502322`) report
-  `expected: 6, received: 4` — the three Media3 tests plus the rotation. The save test is therefore
+  first, and all four advisory runs at this baseline (`34041156680`, `34041593697`,
+  `34042397320`, `34043502322`) report `expected: 6, received: 4, failed: 4` — the three Media3
+  tests plus the rotation. The save test is therefore
   marked by **inheritance, not measurement**, which is now what both KDocs say.
 - **One substantive gap, filed as #250.** `FixtureDocumentsProvider.deletedDocumentIds()` has no
   callers. #226 proved D4's *premise* — SAF hands back a document of exactly zero bytes — but drove

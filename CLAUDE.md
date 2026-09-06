@@ -83,10 +83,11 @@ days. Read it as the current answer, and see the git history if you need the old
   `system_server` from the task-snapshot path whether it passes or not. The sixth, that class's
   save through the picker (#226), carries the marker because it opens the same picker and a second
   DocumentsUI dialog on top of it — **not** because it has ever been observed here. It cannot be:
-  the rotation test runs first and takes the framework down, so both of the advisory runs that
-  exist since it landed report `expected: 6, received: 4` and the four are the three Media3 tests
-  plus the rotation — runs 34042397320 and 34043502322. **Neither picker test has ever reported on
-  the advisory leg**, which is a correction to what the marker's own KDoc says. All six carry
+  the rotation test runs first and takes the framework down, so **all four** advisory runs at this
+  baseline report `expected: 6, received: 4, failed: 4`, and the four are the three Media3 tests
+  plus the rotation — runs 34041156680, 34041593697, 34042397320 and 34043502322. **Neither picker
+  test has ever reported on the advisory leg**, which is a correction to what the marker's own KDoc
+  says. All six carry
   `@FailsOnEmulatorApi37` and run in a separate `continue-on-error` job; the gating leg runs the
   other 64 — **the same 64 as before**, which is exactly how this paragraph went stale unnoticed.
 
