@@ -76,20 +76,21 @@ days. Read it as the current answer, and see the git history if you need the old
   `angle_indirect` and `swangle_indirect` all boot, while `auto`, `off`, `guest` and
   `swiftshader_indirect` do not. `docs/local-emulator.md` has the evidence and the per-API renderer
   table.
-- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Six** of the 70 instrumented
-  tests cannot be *run* on that image, for three measured reasons and one inherited: three Media3
+- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Seven** of the 71 instrumented
+  tests cannot be *run* on that image, for three measured reasons and two inherited: three Media3
   tests fail inside the emulator's own `c2.goldfish.h264.decoder`, one SAF test takes the framework
   down when it rotates the display, and its sibling — the SAF picker round trip — aborts
   `system_server` from the task-snapshot path whether it passes or not. The sixth, that class's
-  save through the picker (#226), carries the marker because it opens the same picker and a second
-  DocumentsUI dialog on top of it — **not** because it has ever been observed here. It cannot be:
-  the rotation test runs first and takes the framework down, so **all four** advisory runs at this
-  baseline report `expected: 6, received: 4, failed: 4`, and the four are the three Media3 tests
-  plus the rotation — runs 34041156680, 34041593697, 34042397320 and 34043502322. **Neither picker
-  test has ever reported on the advisory leg**, which is a correction to what the marker's own KDoc
-  says. All six carry
-  `@FailsOnEmulatorApi37` and run in a separate `continue-on-error` job; the gating leg runs the
-  other 64 — **the same 64 as before**, which is exactly how this paragraph went stale unnoticed.
+  two saves through the picker (#226 and #250), carry the marker because they open the same picker
+  and a second DocumentsUI dialog on top of it — **not** because either has ever been observed here. It cannot be:
+  the rotation test runs first and takes the framework down, so all five advisory runs at the
+  previous baseline reported `expected: 6, received: 4, failed: 4`, and the four were the three
+  Media3 tests plus the rotation — runs 34041156680, 34041593697, 34042397320, 34043502322 and
+  34045105857. **No picker test has ever reported on the advisory leg**, which is a correction to
+  what the marker's own KDoc used to say. All seven carry `@FailsOnEmulatorApi37` and run in a
+  separate `continue-on-error` job; the gating leg runs the other 64 — **the same 64 for the third
+  time running**, which is exactly how this paragraph goes stale unnoticed: 69−5, 70−6 and 71−7
+  are all 64.
 
   **These two numbers move with the suite and are derived, not remembered.** `grep -cE
   '^\s*@Test' ` over `app/src/androidTest` is the first; the second is that minus the marker
@@ -122,7 +123,7 @@ days. Read it as the current answer, and see the git history if you need the old
   describes everything in it. The name is kept deliberately — it is not a required context and
   people have learned to look for it — so **read the marker, not the name**, for what it holds.
   **It is red on every PR, by design**: do not read it as your change breaking something, and do
-  not read a green run as evidence those six tests pass.
+  not read a green run as evidence those seven tests pass.
   `docs/api-37-emulator-crash.md` has the measurements.
 
   **That instruction is also why nobody looks, so the job now reports its own shape** — expected,
@@ -142,7 +143,7 @@ days. Read it as the current answer, and see the git history if you need the old
   is gradle never returning, so the log it left says nothing about it.
 
 Still true, and the reason the advisory job is not simply deleted: **API 37 needs a manual check on
-the Pixel 10 Pro XL before each release.** Those six tests are the one thing CI cannot answer
+the Pixel 10 Pro XL before each release.** Those seven tests are the one thing CI cannot answer
 for.
 
 On a device or emulator, build only the ABI it can execute:

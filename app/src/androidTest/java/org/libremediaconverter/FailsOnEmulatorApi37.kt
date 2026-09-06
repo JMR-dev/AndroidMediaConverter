@@ -10,7 +10,7 @@ package org.libremediaconverter
  * drift, and the drift is silent in both directions (a test that runs nowhere reads as green).
  *
  * **"Cannot be run" covers three things now, and it covered only the first until 2026-09-05.**
- * Four of the six carriers simply fail: three Media3 tests die in the image's own
+ * Four of the seven carriers simply fail: three Media3 tests die in the image's own
  * `c2.goldfish.h264.decoder`, and the SAF rotation test takes the framework down with it. The
  * fifth — `SafPickerRoundTripTest.pickingAFileThroughTheSystemPickerFillsInTheFileCard` —
  * **passes about half the time and aborts `system_server` every time**, which is worse for a
@@ -18,12 +18,13 @@ package org.libremediaconverter
  * point at (#108). The wording was widened rather than the test excused; that test's own KDoc has
  * the four-run measurement.
  *
- * **The sixth is the new third thing: it is marked by inheritance, not by measurement.**
- * `SafPickerRoundTripTest.aSaveWritesToTheDocumentTheSystemPickerCreated` (#226) opens the same
- * picker and then a second DocumentsUI dialog on top of it, so it sits on the same task-snapshot
- * path its sibling was marked for. It has never been observed at API 37 either way — see the
- * measurement under [FAILS_ON_EMULATOR_API37_BASELINE], which is why it cannot be. Marking it was
- * the conservative choice, and **the trigger for revisiting it is the rotation test, not itself**:
+ * **The sixth and seventh are the new third thing: they are marked by inheritance, not by
+ * measurement.** `SafPickerRoundTripTest.aSaveWritesToTheDocumentTheSystemPickerCreated` (#226)
+ * and `.aFailedSaveDeletesTheDocumentItCouldNotWrite` (#250) each open the same picker and then a
+ * second DocumentsUI dialog on top of it, so they sit on the same task-snapshot path their sibling
+ * was marked for. Neither has ever been observed at API 37 either way — see the measurement under
+ * [FAILS_ON_EMULATOR_API37_BASELINE], which is why they cannot be. Marking them was the
+ * conservative choice, and **the trigger for revisiting it is the rotation test, not themselves**:
  * while that one truncates the advisory run, nothing downstream of it can report.
  *
  * It says only what has been measured: **on the emulator, at API 37.** The same tests pass on a
@@ -58,8 +59,8 @@ annotation class FailsOnEmulatorApi37
  * cannot be run on this image, so the count is meant to be simultaneously how many the advisory
  * leg runs and how many fail. A *smaller* failure count is the interesting direction: it means one
  * of them now passes, which is the trigger the KDoc above names for deleting the annotation.
- * **Since 2026-09-06 the second half no longer holds in practice** — the run truncates before two
- * of the six start, which the last paragraph below measures. `expected` still holds, and it is the
+ * **Since 2026-09-06 the second half no longer holds in practice** — the run truncates before
+ * three of the seven start, which the last paragraph below measures. `expected` still holds, and it is the
  * field that catches a marker added without changing this number.
  *
  * **The picker tests are the ones to read that sentence carefully for, and the reason changed
@@ -79,10 +80,11 @@ annotation class FailsOnEmulatorApi37
  * framework having died, which is this job's normal.
  *
  * **That is no longer what happens, and the difference is that neither picker test reports at
- * all.** With six carriers the rotation test truncates the run before them: **all four** advisory
- * runs at this baseline — 34041156680, 34041593697, 34042397320 and 34043502322 — report
- * `expected: 6, received: 4, failed: 4`, and the four are the three Media3 tests plus the
- * rotation. So the advisory leg currently answers for
+ * all.** The rotation test truncates the run before them: **all five** advisory runs at the
+ * previous baseline of six — 34041156680, 34041593697, 34042397320, 34043502322 and 34045105857 —
+ * report `expected: 6, received: 4, failed: 4`, and the four are the three Media3 tests plus the
+ * rotation. #250 adds a third picker test behind the same wall, so expect `expected: 7,
+ * received: 4`. So the advisory leg currently answers for
  * four of its six, and the comparison below is unaffected only because `failed` is not compared
  * on a truncated run. Read it as **unmeasured**, not as passing or failing.
  *
@@ -96,4 +98,4 @@ annotation class FailsOnEmulatorApi37
  * `INSTRUMENTATION_ABORTED`, so the count is a number taken from a partial run. The report
  * records the truncation next to the counts for that reason.
  */
-const val FAILS_ON_EMULATOR_API37_BASELINE = 6
+const val FAILS_ON_EMULATOR_API37_BASELINE = 7

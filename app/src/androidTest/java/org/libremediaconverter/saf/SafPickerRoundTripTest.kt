@@ -25,9 +25,11 @@ import androidx.test.uiautomator.Configurator
 import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import androidx.work.WorkManager
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -40,6 +42,7 @@ import org.libremediaconverter.convert.ConversionDependencies
 import org.libremediaconverter.convert.OutputPublisher
 import org.libremediaconverter.ui.TestTags
 import java.io.File
+import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.regex.Pattern
 
@@ -280,17 +283,41 @@ private class RecordingPublisher(private val app: Context) : OutputPublisher(app
         super.publish(staged, destination)
     }
 
+    /**
+     * Refuses the write when [failOpen] is set, which is the forcing condition for #250.
+     *
+     * Returning null rather than throwing is deliberate: it is the arm `publish`'s
+     * `?: error("Could not open destination for writing")` exists for, and `openDestination`'s
+     * own KDoc says a provider that is present and declines is the half no fake can produce on
+     * demand. The size probe in `publish` has already run by the time this is reached, so
+     * `destinationWasEmpty` is true and `deletePartialOutput` is reached with the document
+     * genuinely empty — which is the whole point.
+     */
+    override fun openDestination(destination: Uri): OutputStream? =
+        if (failOpen) null else super.openDestination(destination)
+
     companion object {
         var savedBytes: ByteArray = ByteArray(0)
         var seenDestination: Uri? = null
         var seenIsDocumentUri: Boolean? = null
         var seenSizeBefore: Long? = null
 
+        /**
+         * Makes the next `publish` refuse to open its destination.
+         *
+         * A flag rather than a second publisher because `ConversionDependencies.publisher` is one
+         * seam and there is no orchestrator: every test in this process shares the instance the
+         * `init` block installed. [reset] clears it in teardown, so a test that sets it cannot
+         * leak a refusing publisher into the next class.
+         */
+        var failOpen: Boolean = false
+
         fun reset() {
             savedBytes = ByteArray(0)
             seenDestination = null
             seenIsDocumentUri = null
             seenSizeBefore = null
+            failOpen = false
         }
     }
 }
@@ -367,6 +394,8 @@ class SafPickerRoundTripTest {
     fun restoreOrientation() {
         // The suite runs without Android Test Orchestrator, so a swapped seam outlives the class.
         ConversionDependencies.reset()
+        RecordingPublisher.reset()
+        clearFinishedWork()
         ActivityLifecycleMonitorRegistry.getInstance().removeLifecycleCallback(recreationWatcher)
         if (!rotated) return
         device.setOrientationNatural()
@@ -571,6 +600,106 @@ class SafPickerRoundTripTest {
     }
 
     /**
+     * The other half of D4 (#250): a save that fails deletes the document it could not write.
+     *
+     * ## Why this is separate from the test above
+     *
+     * #226 proved the *premise* — SAF hands back a document reporting exactly zero bytes, so
+     * `destinationIsKnownEmpty` can answer true — and then drove the success path, where the
+     * `catch` is never entered. So `deletePartialOutput` had still never run against a real
+     * `DocumentsProvider`; its only assertions were `OutputPublisherPublishTest`'s, against
+     * `FakeSafProvider` under Robolectric. That is the same "asserted only against a fake built to
+     * match it" shape #226 was filed to break, one layer down.
+     *
+     * ## The forcing condition, and why it is a returned null
+     *
+     * [RecordingPublisher.failOpen] makes `openDestination` return null. `publish` turns that into
+     * `error("Could not open destination for writing")` **after** its size probe has already run,
+     * so the `catch` is reached with `destinationWasEmpty == true` on a document DocumentsUI
+     * created seconds earlier. Nothing is simulated: the URI, the grant, the provider and the
+     * delete are all real.
+     *
+     * Null rather than a throw because `openDestination`'s KDoc says a provider that is present
+     * and declines is the half no fake can produce on demand — so this is also the first time that
+     * arm has been taken against a live provider rather than a stub.
+     *
+     * ## The oracle, and why it is not a recorder inside the provider
+     *
+     * The obvious assertion — have the provider record what `deleteDocument` was called with, and
+     * read it back — **cannot work here, and finding that out is half of what this test cost.**
+     * `FixtureDocumentsProvider` is declared by the test APK and runs in
+     * `org.libremediaconverter.test`; instrumentation runs in the app's process. A `static` in the
+     * provider is therefore a different object from the one a test can see, and the accessor #226
+     * left behind read empty on every run. That is E7's process wall from a third side, after
+     * `ACTION_OPEN_DOCUMENT` and `ActivityScenario`.
+     *
+     * So the oracle is the document, which does cross the boundary because the app holds a URI
+     * grant for it. **This is still the path rather than the artefact**, because the two
+     * assertions are read together: the size query above proves the document *existed and was
+     * empty* moments earlier, and a `content://` document that no longer answers a query is one
+     * something deleted. Nothing else in the app deletes SAF documents.
+     *
+     * The staged file is asserted to **survive**, which is the deliberate other half of that
+     * `catch`: a failed save may leave the staged copy as the only copy of an hour of transcoding,
+     * so `ConversionViewModel` keeps it and puts "Try saving again" on screen.
+     */
+    @Test
+    @FailsOnEmulatorApi37
+    fun aFailedSaveDeletesTheDocumentItCouldNotWrite() {
+        pickTheFixture()
+        convertToTheDefaultFormat()
+
+        RecordingPublisher.failOpen = true
+        saveThroughTheSystemPicker(settlesOn = TestTags.RETRY_SAVE)
+
+        val destination = RecordingPublisher.seenDestination
+        assertNotNull("publish was never reached, so the delete arm was not exercised", destination)
+        assertEquals(
+            "the document was not positively empty, so publish would refuse to delete it",
+            0L,
+            RecordingPublisher.seenSizeBefore,
+        )
+        assertFalse(
+            "publish did not delete the document it could not write: $destination",
+            documentStillExists(destination!!),
+        )
+
+        // The staged copy is kept on purpose -- see ConversionViewModel.save's onFailure.
+        val staged = File(context.cacheDir, "conversions")
+        assertTrue(
+            "a failed save must not delete the staged file; it may be the only copy",
+            staged.listFiles()?.isNotEmpty() == true,
+        )
+    }
+
+    /**
+     * Leaves nothing for the next test's launch to reattach to.
+     *
+     * **In teardown rather than at the end of a test, and that placement is the point.**
+     * `aFailedSaveDeletesTheDocumentItCouldNotWrite` proves that a failed save *keeps* its staged
+     * file — deliberately, since it may be the only copy — so it ends with a finished job and a
+     * live staged file, which is exactly what the app reattaches to on the next launch. Its
+     * sibling then opened on `Converted` with no "Choose file" to tap: measured, as a 30 s timeout
+     * on `converter.chooseFile` in a test that had nothing wrong with it.
+     *
+     * The first fix tapped "Start over" at the end of the test body. That works until the test
+     * fails, and then it does not run at all — measured too, on the mutation run that proved this
+     * suite bites: one real failure became two, and the second looked like an unrelated flake.
+     * **One cause must produce one red test**, so the cleanup belongs where it runs either way.
+     */
+    private fun clearFinishedWork() {
+        WorkManager.getInstance(context).cancelAllWork()
+        File(context.cacheDir, "conversions").listFiles()?.forEach { it.delete() }
+    }
+
+    /** Whether [destination] still answers a metadata query. A deleted document does not. */
+    private fun documentStillExists(destination: Uri): Boolean = runCatching {
+        context.contentResolver
+            .query(destination, arrayOf(OpenableColumns.SIZE), null, null, null)
+            ?.use { it.moveToFirst() } ?: false
+    }.getOrDefault(false)
+
+    /**
      * Runs the conversion, leaving the screen on `Converted`.
      *
      * **The format is left at its default, and that is a constraint rather than laziness.**
@@ -636,7 +765,7 @@ class SafPickerRoundTripTest {
      * Retried whole, for the reason [pickTheFixture] documents: a dialog that came up unreadable
      * cannot be recovered from inside, and a fresh one is the only answer.
      */
-    private fun saveThroughTheSystemPicker() {
+    private fun saveThroughTheSystemPicker(settlesOn: String = TestTags.Converter.CONVERT_ANOTHER) {
         var missing: BySelector? = null
         repeat(PICK_ATTEMPTS) { attempt ->
             requireAReadableScreen()
@@ -645,7 +774,9 @@ class SafPickerRoundTripTest {
                 if (attempt == 0) PICKER_TIMEOUT_MS else REOPENED_TIMEOUT_MS,
             )
             if (missing == null) {
-                awaitNode(TestTags.Converter.CONVERT_ANOTHER, SAVE_TIMEOUT_MS)
+                // The node that says the save has *finished*, either way. Waiting on the success
+                // one when the save is meant to fail would time out on a test that is working.
+                awaitNode(settlesOn, SAVE_TIMEOUT_MS)
                 return
             }
             dismissThePicker()
