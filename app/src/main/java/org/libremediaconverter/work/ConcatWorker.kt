@@ -8,6 +8,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ForegroundInfo
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkerParameters
 import androidx.work.hasKeyWithValueOfType
 import androidx.work.workDataOf
@@ -27,6 +28,10 @@ import org.libremediaconverter.model.OutputFormat
  * Progress is not reported. FFmpeg's statistics callback gives a timestamp against a
  * single input's duration, which is meaningless once several files are being
  * concatenated; showing a fabricated percentage would be worse than showing none.
+ *
+ * Enqueued as **expedited** work for the same reasons, and with the same caveats, as
+ * [ConversionWorker] — its class KDoc carries both, and a join is user-initiated in exactly the
+ * way a conversion is.
  */
 @UnstableApi
 class ConcatWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
@@ -68,13 +73,10 @@ class ConcatWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             // which is where a WorkManager restart after process death always begins -- used to
             // throw straight past this catch, taking the retry, the error message and the delete
             // with it. See ConversionWorker.doWork and FailureOutcome.
-            setForeground(
-                ForegroundInfo(
-                    NOTIFICATION_ID,
-                    notifications.build(id, "Joining ${uris.size} files", 0, indeterminate = true),
-                    ConversionForegroundType.current(),
-                ),
-            )
+            //
+            // Posted through getForegroundInfo() rather than built here a second time -- see that
+            // override, and its twin in ConversionWorker.
+            setForeground(getForegroundInfo())
 
             val result = ConversionDependencies.concat(applicationContext).join(uris, staged, format)
             Result.success(
@@ -129,11 +131,29 @@ class ConcatWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         return publisher.hasSpaceFor(bytes)
     }
 
-    override suspend fun getForegroundInfo(): ForegroundInfo = ForegroundInfo(
-        NOTIFICATION_ID,
-        notifications.build(id, "Joining files", 0, indeterminate = true),
-        ConversionForegroundType.current(),
-    )
+    /**
+     * The notification a starting join posts, and now the only definition of it.
+     *
+     * WorkManager's hook for expedited work, which **will not call this on any device this app
+     * supports** — see [ConversionWorker.getForegroundInfo] for the measurement and for why
+     * `setExpedited` alone would have left these lines exactly as cold as they were. What makes
+     * them live is [doWork] posting this instead of building its own copy.
+     *
+     * It counts the inputs itself rather than being handed the number, so that it is still answerable
+     * before [doWork] has parsed anything — which is the contract WorkManager's own caller wants.
+     * The count is read from the same key, so the two cannot disagree. The `?: 0` arm is
+     * unreachable and named rather than covered: [doWork] refuses a job with no URI array several
+     * lines above this call, and nothing else calls it. It is the shape `docs/coverage-read-findings.md`
+     * calls F4 — a second line of defence that cannot be provoked.
+     */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        val inputCount = inputData.getStringArray(KEY_INPUT_URIS)?.size ?: 0
+        return ForegroundInfo(
+            NOTIFICATION_ID,
+            notifications.build(id, joiningTitle(inputCount), 0, indeterminate = true),
+            ConversionForegroundType.current(),
+        )
+    }
 
     companion object {
         /**
@@ -204,6 +224,16 @@ class ConcatWorker(context: Context, params: WorkerParameters) : CoroutineWorker
          */
         fun outputNameFor(format: OutputFormat): String = "joined.${format.extension}"
 
+        /**
+         * What the progress notification says while a join runs.
+         *
+         * Named once, for the convention #158 established about strings the user can see. It was
+         * two strings until 2026-09-06 — `"Joining N files"` built inline in [doWork] and a
+         * countless `"Joining files"` in [getForegroundInfo] — for one notification that only ever
+         * had one job, and the copy nothing executed was free to drift from the one that did.
+         */
+        fun joiningTitle(inputCount: Int): String = "Joining $inputCount files"
+
         private const val NOTIFICATION_ID = 1002
         private const val TAG = "ConcatWorker"
 
@@ -215,6 +245,10 @@ class ConcatWorker(context: Context, params: WorkerParameters) : CoroutineWorker
          */
         fun request(inputs: List<Uri>, totalBytes: Long?, format: OutputFormat = DEFAULT_FORMAT) =
             OneTimeWorkRequestBuilder<ConcatWorker>()
+                // Expedited, exactly as ConversionWorker.request is and for the same reasons; that
+                // one's comment and class KDoc carry them. Nothing here sets an initial delay or a
+                // constraint, which is what makes it legal for `build()` to accept.
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .addTag(JobTags.inputCount(inputs.size))
                 .setInputData(
                     Data.Builder()

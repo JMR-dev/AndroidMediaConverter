@@ -457,6 +457,27 @@ They are still correct to keep: `ForegroundInfo` is required by the `CoroutineWo
 named — a `getForegroundInfo` that starts branching — plus one more: the day anything calls
 `setExpedited`.
 
+**Updated 2026-09-06 (#252, and the sentence above is half wrong).** "WorkManager calls
+`getForegroundInfoAsync()` only for expedited work" is true and *not sufficient*, and the missing
+half is what made the reopening trigger wrong. `WorkForeground.kt:38` in work-runtime 2.11.2 opens
+the library's only caller with
+
+```kotlin
+if (!spec.expedited || Build.VERSION.SDK_INT >= 31) return
+```
+
+and `minSdk` is 33. So calling `setExpedited` reopens nothing: on **every** device this app
+supports, WorkManager does not consult `getForegroundInfo()` whether the work is expedited or not.
+#252 was filed on the trigger as this entry stated it, and its acceptance criterion — "a request
+now carries `setExpedited` and the existing worker tests drive them" — cannot be met that way.
+
+What made the lines live instead was that each worker held **two** definitions of one notification:
+the override, and an identical `ForegroundInfo` built inline in `doWork`. `doWork` now posts the
+override's, so the duplicate is gone and what remains runs on every job. The general lesson is the
+one E1 states from the other side: *check that the mechanism you are relying on actually fires on
+the machine that runs it* — here the mechanism was a library early-return two source lines long,
+and four waves of reading had taken the API summary's word for it.
+
 ---
 
 ## F10 — Three arms that are reachable, uncovered, and cannot be made to bite
@@ -506,7 +527,7 @@ the cheaper order.
 | F6 | Four more unreachable arms; `ConversionRouter:214-217`'s KDoc is false | low | confirmed by inspection; each traced to its upstream guard | **no action**, except the one-line KDoc fix |
 | F7 | `probeWithExtractor`'s catch is unreachable, as `probeForConcat`'s is | n/a | measured across four URI shapes (recorded in `CLAUDE.md`) | **no action** — device-only, now written down for both sites |
 | F8 | Three more dead members and six unused defaults | low | confirmed by inspection; grep per member | delete or keep knowingly — **not** a test gap |
-| F9 | Both `getForegroundInfo` overrides are dead: expedited work is never used | n/a | confirmed by inspection; `grep setExpedited` returns nothing | **no action** — sharpens #88's close |
+| F9 | Both `getForegroundInfo` overrides are dead: expedited work is never used | n/a | confirmed by inspection; `grep setExpedited` returns nothing | **closed 2026-09-06 by #252** — and its stated reopening trigger was wrong; see the update on the entry |
 | F10 | Three reachable arms where no mutation bites | n/a | confirmed by inspection; each mutation traced to its masking guard | **no action** — recorded to stop the next read re-picking them |
 
 Order, if these are acted on: **F1 and F5 first, separately.** They are the two with a possible
