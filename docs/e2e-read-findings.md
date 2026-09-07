@@ -515,3 +515,101 @@ assumed.
 **The reusable part**: a union report is what separates "no test calls this" from "only a device
 calls it", and neither report alone can. Six of the eight rows above were indistinguishable from
 real gaps in the JVM-only number.
+
+---
+
+## E9 — the branch tier of the same union, classified
+
+**Severity: n/a · Measured 2026-09-07 at `c2cc9e2` · the half E8 stopped short of**
+
+E8 classified the 32 lines neither suite executes and stopped there. It never asked the other
+question a union can answer: which *arms* does neither suite take, on lines both suites run? That
+tier had never been read, and it is where what is left actually lives.
+
+**Line numbers below are as of `c2cc9e2`**, and #261 rewrites four of these files. Every row names
+the expression beside the number for that reason — E8's own refs shifted under #252 within a day.
+
+### How this was measured, and why it is not E8's report
+
+E8's union was built once and kept as an artifact; no Gradle task produces one, because a connected
+run only emits an `.ec` with `enableAndroidTestCoverage` set by hand. This read rebuilt it: a fresh
+`:app:jacocoTestReport` merged with **E8's own API 34 `.ec`**, against one set of current class
+files, through a scratchpad init script. Union: **99.0% line (2352/2375), 90.1% branch
+(1206/1338)**; JVM alone 94.6% / 87.6%.
+
+Controls, because a silently-rejected `.ec` looks exactly like a well-covered codebase: the device
+half contributes 32 lines in `FFmpegEngine`, 24 in `Media3Engine`, 15 in `ConcatEngine` and 9 in
+`MainActivity` that the JVM suite never reaches. It applied.
+
+**Two classes are the exception, and the bound matters more than the exception.** #252 changed
+`ConversionWorker` and `ConcatWorker`, so JaCoCo rejected E8's `.ec` for exactly those two — a class
+is matched by a hash of its bytecode. E8's measurement says the device contributed **1** unique line
+in `ConversionWorker` and **0** in `ConcatWorker`, so the blind spot is one line wide. It is
+`ConversionWorker:252`, `getSafParameterForRead` — old line 228, and the one device-only line in
+that file. It shows as never-executed here and **is not a gap**; #252's own commit message records
+an instrumented API 34 pass on the new bytecode.
+
+### The filter, named once
+
+**`mi == 0 && mb > 0`** — a *fully* executed line carrying an arm nothing takes.
+
+`CLAUDE.md` describes its second filter as `ci > 0 && mb > 0` at method level and reports **18**
+lines from wave 4. That figure reproduces exactly under `mi == 0` (19 branches on 18 lines) and not
+under `ci > 0`, which admits partially-executed signature lines and gives 139. The two are different
+metrics, not a stale number and a correction — worth stating because the difference looks like drift
+and is not.
+
+### The artefact E8 flagged is retired
+
+E8 warned that the union's branch denominator ran 16 ahead of the JVM's, "entirely inside
+`MediaProbe`", and told readers not to quote a MediaProbe branch figure raw. Rebuilt, both
+denominators are **1338** and `MediaProbe:321` (`matroskaOrWebm`, the only string-literal `when` in
+that file) reads `mb=0 cb=4` — fully covered. All 16 sat on that one line. So it was an artefact of
+how the report was constructed and never a property of the code, and E8's caveat is withdrawn rather
+than carried forward. `matroskaOrWebm` is not, and never was, a gap.
+
+### The result: 23 arms on 22 lines, and 12 of the 22 are decided here
+
+Tier 1 is now **22** lines, down from 32: #252 closed the ten `getForegroundInfo` lines and added no
+new one. Tier 2 did not move.
+
+**Decided — no ticket.** Recorded here rather than as new F-entries, following E8's precedent and
+because `coverage-read-findings.md` is being rewritten by #261. **A JVM-only read that flags any of
+these should look here before re-filing them.**
+
+| site | expression | why it is decided |
+|---|---|---|
+| `FFmpegCommandBuilder:113` | `when (codec)` in `encodeVideo` | the missed arm is the `COPY`/`NONE` pair whose body at `:167-168` is already Tier 1 and F4-exempt. One arm counted in two tiers |
+| `FFmpegCommandBuilder:183` | `when (audio.codec)` | the `VORBIS` arm — **in flight**, see below |
+| `ContainerCapabilities:277` | `?.let(::add)` | F6-shaped. `a?.let{b}?.let(::add)` reaches this branch only when the *lambda* returned null — `firstContainerHolding` finding no carrier. `VIDEO_ALIASES` targets are exactly H264, H265, VP8, VP9, AV1, and MKV carries all five, so it never does. A null at `:275` jumps past this line entirely |
+| `ConversionViewModel:405` | `!is Idle \|\| activeWorkId != null` | F10-shaped, and the line's own comment says so: `ScreenOwnership`'s token is what holds the line. Delete the second half and the suite stays green, correctly |
+| `ConverterScreen:362`, `JoinScreen:245` | `is Failed -> {` | the last arm of its `when` over a sealed state, so the missed branch is the synthetic `NoWhenBranchMatchedException` — compiler-generated |
+| `ConverterScreen:91` | `) { viewModel.convert() }` | the `rememberLauncherForActivityResult` callback; Compose codegen, the shape `CLAUDE.md` already names at `JoinScreen:222` |
+| `AndroidDeviceCodecs:52` | `cached ?: synchronized(this) { cached ?: … }` | double-checked locking's **inner** re-check. Reaching it needs two threads racing the same first call; a seam does not create one |
+| `ConversionWorker:319` | `e is CancellationException \|\| isStopped` | the `isStopped` half — WorkManager stopping a worker mid-run. Device-only |
+| `Media3Engine:83`, `:153`, `:157` | `if (cont.isActive)` ×3 | cancellation racing completion inside the Transformer listener. Device-only and inherently racy; a test that pinned it would be pinning a scheduler |
+
+**Filed — 10 sites, 5 tickets.** Each names the mutation that must go red, or says the read *is* the
+ticket where it cannot yet:
+
+| ticket | sites | what |
+|---|---|---|
+| **#262** | `MediaProbe:303, :305, :306, :309` | `containerFrom`'s alias arms. `names` is `getFormat().split(',')` and ffprobe reports a demuxer *group* (`"mov,mp4,m4a,3gp,3g2,mj2"`), so the second half of each `\|\|` may be dead by construction. Per-site read. Carries `:312` (`aac`/`adts`) as the one that looks like a real fixture gap: the only AAC fixture is `sample_aac.m4a`, which matches `:305` and never reaches it |
+| **#263** | `MediaProbe:386` | the `audio != null` arm — no fixture has two audio tracks, so the guard that makes "first track wins" true is unasserted. E1's shape |
+| **#264** | `ConcatStrategy:57`, `ContainerCapabilities:122`, `OutputFormat:103` | three pure `model`-layer decision arms a test can call directly: the dimension check's height half, an image spec carrying a codec, and `isPureRemux`'s all-`NONE` case |
+| **#265** | `FFmpegEngine:67` | `if (durationMs > 0)`'s false arm. `MediaProbe` returns `0` when it cannot read a duration, so this is a real input, not a second line of defence |
+| **#266** | `FFmpegConcatCommand:95` | the non-MP4 concat output. Reachability depends on what the join UI offers — read that first; F4-shaped if it offers only MP4 |
+
+### One row is being closed while this was written
+
+`FFmpegCommandBuilder:183`'s missed arm is `VORBIS`, which is #254 — open as **#261**, which rebuilds
+the AAR with `--enable-libvorbis` and makes the arm reachable. **The set is 21 arms on 21 lines the
+day that merges**, and both tiers want re-deriving then rather than editing this sentence.
+
+### The reusable part
+
+E8's lesson was that a union separates "no test calls this" from "only a device calls it". This
+tier's is narrower and less comfortable: **once the never-executed lines are gone, what is left is
+mostly not a test gap at all** — 12 of 22 sites are compiler codegen, a documented exemption, or a
+race, and they are indistinguishable from real gaps in any report. The five tickets are what
+survived reading all 22, and three of them are reads rather than tests.
