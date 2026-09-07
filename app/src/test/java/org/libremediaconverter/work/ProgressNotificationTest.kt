@@ -3,16 +3,12 @@ package org.libremediaconverter.work
 import android.app.Application
 import android.app.Notification
 import android.app.NotificationManager
-import android.content.Context
 import android.net.Uri
 import androidx.media3.common.util.UnstableApi
 import androidx.work.Data
-import androidx.work.ForegroundInfo
 import androidx.work.WorkInfo
-import androidx.work.testing.TestForegroundUpdater
 import androidx.work.testing.TestListenableWorkerBuilder
 import androidx.work.workDataOf
-import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -221,26 +217,6 @@ class ProgressNotificationTest {
             container = Container.MP4,
             durationMs = 1_000,
         )
-    }
-}
-
-/**
- * Records every [ForegroundInfo] the worker publishes, and otherwise behaves as the test default.
- *
- * Delegating to [TestForegroundUpdater] rather than hand-rolling a `ListenableFuture<Void>`: the
- * worker awaits what this returns, so a future that never completes would hang the initial
- * `setForeground` rather than test anything.
- */
-private class RecordingForegroundUpdater : TestForegroundUpdater() {
-    val infos = mutableListOf<ForegroundInfo>()
-
-    override fun setForegroundAsync(
-        context: Context,
-        id: UUID,
-        foregroundInfo: ForegroundInfo,
-    ): ListenableFuture<Void> {
-        infos += foregroundInfo
-        return super.setForegroundAsync(context, id, foregroundInfo)
     }
 }
 

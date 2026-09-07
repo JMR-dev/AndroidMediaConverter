@@ -495,7 +495,7 @@ Every one was read. **None of them is an e2e test gap**, which is the result:
 | lines | where | classification |
 |---|---|---|
 | 9 | `Transcoders` ×3, `ConversionViewModel`, `ConverterScreen`, `JoinViewModel`, `JoinScreen`, `MainActivity`, `Reattachment` | **compiler-generated** — default-arg `$default` bridges, coroutine completion, the synthetic `NoWhenBranchMatchedException` arm of a `when` over `Destination` |
-| 10 | `ConversionWorker:342-346`, `ConcatWorker:132-136` | `getForegroundInfo()` — WorkManager's **expedited-work** hook, and nothing here enqueues expedited work. The live path is `setForeground(foregroundInfo(...))`, which is covered. **#252** |
+| 10 | `ConversionWorker:342-346`, `ConcatWorker:132-136` | `getForegroundInfo()` — WorkManager's **expedited-work** hook, and nothing here enqueues expedited work. The live path is `setForeground(foregroundInfo(...))`, which is covered. **#252 — closed 2026-09-06, and not the way this row expects.** Expedited work is now enqueued, but that is *not* what covers these lines: `WorkForeground.kt:38` returns before the hook whenever `SDK_INT >= 31`, and `minSdk` is 33. What covers them is `doWork` posting the override instead of a second copy of the same notification. See `coverage-read-findings.md` F9's update |
 | 3 | `ConversionNotifications:60-62` | **F5** — `areEnabled()` has no callers. Already on record |
 | 3 | `CopyPlanner:28`, `OutputFormat:222-223` | public members with no callers. **#253**, with F5 |
 | 3 | `MediaProbe:210-212` | `probeWithFFprobe`'s `catch` — **F7's sibling, and now measured**. See below |
