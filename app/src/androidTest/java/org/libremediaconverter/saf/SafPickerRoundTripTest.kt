@@ -1,7 +1,9 @@
 package org.libremediaconverter.saf
 
+import android.Manifest
 import android.app.UiAutomation
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -33,6 +35,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -360,6 +363,71 @@ class SafPickerRoundTripTest {
 
     /** Counts [MainActivity] creations from the moment [watchForRecreation] is called. */
     private val recreations = AtomicInteger()
+
+    /**
+     * Holds `POST_NOTIFICATIONS`, so tapping Convert cannot open a window this test has to fight.
+     *
+     * ## What this replaces, and why the replacement is not a smaller wait
+     *
+     * Until #268 the tap was followed by `dismissThePermissionDialog`, which waited for
+     * `com.google.android.permissioncontroller` to appear and pressed back on it. That is a
+     * *foreign, focused window* in the middle of the one step this class most needs to be
+     * deterministic, and it is what mechanism B of #268 was: on the API 35 leg of run 34146936252
+     * the tap landed — `START u0 {act=android.content.pm.action.REQUEST_PERMISSIONS ...
+     * GrantPermissionsActivity}` at 17:38:30.516 — back was pressed at 17:38:32.479, and no
+     * `ConversionWorker` was ever enqueued in the five minutes that followed. A back press goes to
+     * whichever window holds *input* focus, and `Until.hasObject` answers about the accessibility
+     * tree, which can carry the dialog's nodes before it has the focus; a back that arrives one
+     * window early lands on `MainActivity` and finishes it, which is a screen no `waitUntil` can
+     * wait for the return of.
+     *
+     * ## Why holding the permission removes the window rather than making it less likely
+     *
+     * `ConverterScreen` wires Convert to `requestNotifications.launch(POST_NOTIFICATIONS)`, and
+     * `ActivityResultContracts.RequestPermission.getSynchronousResult` returns
+     * `SynchronousResult(true)` — *without starting anything* — when
+     * `checkSelfPermission` already answers `PERMISSION_GRANTED`. So with the permission held there
+     * is no `GrantPermissionsActivity`, no foreign window, no back press, and nothing this test
+     * injects can finish the Activity. That is the whole chain, and [holdTheNotificationPermission]
+     * asserts its one premise rather than assuming it.
+     *
+     * ## The KDoc this contradicts, and the measurement that settles it
+     *
+     * `convertToTheDefaultFormat` used to say granting "was tried first and did not take —
+     * `GrantPermissionsActivity` appeared anyway". Re-measured on 2026-09-07, API 34 on this host,
+     * six consecutive runs of this class: logcat carries **zero**
+     * `act=android.content.pm.action.REQUEST_PERMISSIONS` starts and zero `GrantPermissionsActivity`
+     * across all six, and exactly two `WM-SystemJobScheduler: Scheduling work ID` lines per run —
+     * one for each test that converts, so neither Convert tap was lost. Whatever the earlier
+     * attempt did, a `pm grant` issued before the tap does take. The assertion below is what keeps
+     * that from going quietly stale.
+     *
+     * ## Two consequences, both deliberate
+     *
+     * The grant is **not** undone in teardown: revoking a runtime permission restarts the app's
+     * process, which would take the rest of the instrumentation run with it. The suite runs without
+     * Orchestrator, so every class that converts *after* this one now does so with notifications
+     * permitted. That is benign — `ConversionNotifications` builds its channel at
+     * `IMPORTANCE_LOW`, so nothing heads-up over the screen — but it is a real change to the
+     * device state the rest of the run sees, and `NotificationCancelActionTest`'s KDoc is updated
+     * with it.
+     *
+     * And this class no longer takes the denial path. It never asserted anything about it — the
+     * permission is setup for a test whose subject is SAF — and nothing is lost by it: the
+     * callback `ConverterScreen` registers is `{ viewModel.convert() }`, which **ignores its
+     * boolean**, so "converts whichever way the answer goes" is the shape of the code rather than a
+     * branch a test has to choose. `StaleLauncherResultTest` is what pins that callback path.
+     */
+    @Before
+    fun holdTheNotificationPermission() {
+        device.executeShellCommand("pm grant $appPackage ${Manifest.permission.POST_NOTIFICATIONS}")
+        assertEquals(
+            "POST_NOTIFICATIONS is not held, so tapping Convert would open a permission dialog " +
+                "and this class's determinism argument does not hold -- see the KDoc above",
+            PackageManager.PERMISSION_GRANTED,
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS),
+        )
+    }
 
     /**
      * Counts a rotation's recreation without asking the Activity anything.
@@ -721,13 +789,10 @@ class SafPickerRoundTripTest {
      * showed LMC R38 fixtures"*. The default `MP4_H265` produces `video/mp4` and the root is
      * offered.
      *
-     * **The notification dialog is dismissed rather than pre-granted, and that is the honest
-     * version.** Convert never calls `convert()` directly — it launches `RequestPermission` for
-     * `POST_NOTIFICATIONS` and converts from the callback **whichever way the answer goes**. So the
-     * dialog only has to be got out of the way; denying it is a real user's path and the conversion
-     * still runs. Granting it programmatically was tried first and did not take —
-     * `GrantPermissionsActivity` appeared anyway, the click that followed went to it rather than to
-     * the app, and the screen sat in `Ready` with nothing enqueued.
+     * **The notification permission is held rather than dismissed**, which is #268's mechanism B
+     * and is argued in [holdTheNotificationPermission]. The short version: `RequestPermission`
+     * starts no Activity at all when the permission is already granted, so the tap below is
+     * followed by no foreign window.
      *
      * **Both taps scroll first.** On `Ready` the screen carries a file card, five pickers and then
      * the button, so Convert is below the fold on a phone. `performClick` on an off-screen node
@@ -735,38 +800,94 @@ class SafPickerRoundTripTest {
      * either way — the first version of this sat waiting for a `Converted` that could never come.
      */
     private fun convertToTheDefaultFormat() {
+        awaitTheProbeHavingLanded()
+
         composeRule.onNodeWithTag(TestTags.Converter.CONVERT)
             .performScrollTo()
             .assertIsEnabled()
             .performClick()
 
-        dismissThePermissionDialog()
+        requireTheTapToHaveStartedTheJob()
         awaitNode(TestTags.SAVE_FILE, CONVERSION_TIMEOUT_MS)
     }
 
     /**
-     * Gets the `POST_NOTIFICATIONS` dialog out of the way, if this device shows one.
+     * Blocks until the pick's probe has been rendered, so no relayout can straddle the next tap.
      *
-     * Backing out of it is a denial, and a denial is fine here: the conversion starts either way,
-     * and what that costs the user is a progress notification confined to the Task Manager. Waiting
-     * only briefly, because on a device where the permission is already held no dialog appears at
-     * all and the conversion is already under way.
+     * **This is #268's mechanism A, and the argument is that it becomes impossible rather than
+     * unlikely.** `ConversionViewModel.onInputPicked` writes `_state` exactly twice: once with the
+     * name and size as soon as the metadata query returns, and once more with the probe filled in.
+     * The second write is what grows the file card, which moves everything below it — including the
+     * Convert button. Compose's injection computes the target's centre from the semantics node and
+     * dispatches the touch afterwards; a relayout in that gap hit-tests the stationary coordinate
+     * against the *new* layout, so the down and the up land on whatever moved into the button's old
+     * place. Nothing throws. Measured on the two failing gating legs as the gap between the pick's
+     * FFprobe closing and the tap: 319 ms and 421 ms passed, 46 ms, 98 ms and 124 ms did not.
+     *
+     * A detail row can only be composed from that second write, because `FileCard` renders the rows
+     * exclusively under `input.probe != null`. So once one exists, both of `onInputPicked`'s writes
+     * have landed and been laid out, and every `_state` write still in flight is either landed or
+     * superseded.
+     *
+     * `reattach` has **three** outcomes here, not two. It returns on its `_state.value !is Idle`
+     * guard; or it finds nothing; or — because `pruneWork()` is async and can leave a finished job
+     * unpruned — it passes that guard and starts an `observe()`. This paragraph used to name only
+     * the first two, which was wrong rather than merely incomplete: the third is a live coroutine
+     * with writes ahead of it.
+     *
+     * It is still harmless, and by a different mechanism than the guard. `reattach` reads
+     * `ownership.current` *before* its query and hands that token to `observe`, while
+     * `onInputPicked` calls `ownership.claim()` synchronously on the pick — so by the time a
+     * detail row exists the observation is superseded, and every emission returns at
+     * `stillHeldBy` before it writes. Outside that path `observe` is not started until
+     * `convert()` runs. **The card cannot change height again before the tap**, which is a
+     * different claim from waiting longer.
+     *
+     * The `Container` row specifically, rather than a new "probing finished" tag in `main`, because
+     * this fixture is an MP4 video and that row is already what
+     * [pickingAFileThroughTheSystemPickerFillsInTheFileCard] waits on and asserts. It is a
+     * *presence* wait, which cannot be satisfied by a composition that is momentarily absent — an
+     * absence wait can, and that would tap into nothing.
+     *
+     * **Not in [pickTheFixture].** The rotation test does not tap a Compose affordance in this
+     * window at all, and the picker test already makes this exact wait its own assertion. Putting
+     * it here keeps a broken read grant reddening one test with the message that explains it.
      */
-    private fun dismissThePermissionDialog() {
-        if (device.wait(Until.hasObject(By.pkg(PERMISSION_UI_PACKAGE)), PERMISSION_DIALOG_MS) != true) {
-            return
+    private fun awaitTheProbeHavingLanded() {
+        awaitNode(TestTags.Converter.detailRow(CONTAINER_LABEL))
+    }
+
+    /**
+     * Fails fast if the Convert tap started nothing, instead of waiting out the conversion budget.
+     *
+     * **A diagnostic, not the synchronisation** — [awaitTheProbeHavingLanded] is what makes the tap
+     * land, and this cannot rescue a tap that did not. It exists because of what a lost tap used to
+     * look like: `ComposeTimeoutException`, 300000 ms for `action.saveFile`, five minutes after a
+     * screen that had never left `Ready`, which names the save affordance and says nothing about
+     * the tap two steps earlier. Every #268 failure was read from logcat rather than from the
+     * message, and this is the message it should have had.
+     *
+     * The condition is monotonic and needs no budget of its own: `convert()` sets `Converting`
+     * synchronously, and `Ready` is the only state that renders a Convert button, so once the tag
+     * is gone it stays gone. [APP_TIMEOUT_MS] rather than a new constant, because "the app should
+     * have reacted by now" is exactly what that number already means here.
+     */
+    private fun requireTheTapToHaveStartedTheJob() {
+        val tag = TestTags.Converter.CONVERT
+        try {
+            composeRule.waitUntil("the Convert tap left the Ready screen", APP_TIMEOUT_MS) {
+                // A composition that is momentarily absent throws, and must read as "not yet"
+                // rather than as "the button is gone" -- see awaitNode.
+                runCatching { composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isEmpty() }
+                    .getOrDefault(false)
+            }
+        } catch (timeout: ComposeTimeoutException) {
+            throw AssertionError(
+                "the Convert tap did not start a conversion: $tag is still on screen " +
+                    "${APP_TIMEOUT_MS}ms after it was clicked, so the screen never left Ready",
+                timeout,
+            )
         }
-        device.pressBack()
-        device.wait(Until.gone(By.pkg(PERMISSION_UI_PACKAGE)), PERMISSION_DIALOG_MS)
-        // And wait for the app to be in front again before anything asks Compose about it.
-        // Querying while another window still owns the screen raises "No compose hierarchies found
-        // in the app", which is what this test did on an API 35 leg: the back press had landed but
-        // the dialog had not finished going away.
-        //
-        // Asked of UiAutomator rather than through awaitAppFocus, which is the opposite of what the
-        // class KDoc argues for elsewhere and is right here: awaitAppFocus goes through
-        // composeRule.waitUntil, so it would raise the very error it is being used to avoid.
-        device.wait(Until.hasObject(By.pkg(context.packageName)), FOCUS_TIMEOUT_MS)
     }
 
     /**
@@ -1205,8 +1326,9 @@ class SafPickerRoundTripTest {
      * `fetchSemanticsNodes` **throws** `IllegalStateException: No compose hierarchies found in the
      * app` when nothing is attached at that instant, and `waitUntil` propagates it on the first
      * poll instead of waiting out the deadline. This class spends much of its time with another
-     * app in front — the picker, the create-document dialog, the permission dialog — so there is
-     * always a window where the app is coming back and has no composition yet. Before this, that
+     * app in front — the picker and the create-document dialog, and until #268 the permission
+     * dialog too — so there is always a window where the app is coming back and has no composition
+     * yet. Before this, that
      * window was a hard failure: measured on the API 34 leg of run 34057196628, where **both** SAF
      * tests died that way while the same commit passed API 33, 35, 36 and 37, and the previous
      * commit passed API 34 and failed 35. A failing leg that moves between runs is #190's
@@ -1239,12 +1361,6 @@ class SafPickerRoundTripTest {
          */
         const val PICKER_TIMEOUT_MS = 30_000L
         const val APP_TIMEOUT_MS = 30_000L
-
-        /** The runtime-permission dialog's package, so it can be recognised and dismissed. */
-        const val PERMISSION_UI_PACKAGE = "com.google.android.permissioncontroller"
-
-        /** Short: either the dialog is up almost immediately, or the permission was already held. */
-        const val PERMISSION_DIALOG_MS = 5_000L
 
         /**
          * Bounds a hang, and **the first number here was measured on one API level and wrong on
