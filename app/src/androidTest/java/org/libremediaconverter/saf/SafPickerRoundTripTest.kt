@@ -826,11 +826,22 @@ class SafPickerRoundTripTest {
      *
      * A detail row can only be composed from that second write, because `FileCard` renders the rows
      * exclusively under `input.probe != null`. So once one exists, both of `onInputPicked`'s writes
-     * have landed and been laid out, and no coroutine in the ViewModel has a `_state` write left in
-     * flight: `reattach` has either returned on its `_state.value !is Idle` guard or found nothing
-     * (teardown prunes finished work), and `observe` is not started until `convert()` runs. **The
-     * card cannot change height again before the tap**, which is a different claim from waiting
-     * longer.
+     * have landed and been laid out, and every `_state` write still in flight is either landed or
+     * superseded.
+     *
+     * `reattach` has **three** outcomes here, not two. It returns on its `_state.value !is Idle`
+     * guard; or it finds nothing; or — because `pruneWork()` is async and can leave a finished job
+     * unpruned — it passes that guard and starts an `observe()`. This paragraph used to name only
+     * the first two, which was wrong rather than merely incomplete: the third is a live coroutine
+     * with writes ahead of it.
+     *
+     * It is still harmless, and by a different mechanism than the guard. `reattach` reads
+     * `ownership.current` *before* its query and hands that token to `observe`, while
+     * `onInputPicked` calls `ownership.claim()` synchronously on the pick — so by the time a
+     * detail row exists the observation is superseded, and every emission returns at
+     * `stillHeldBy` before it writes. Outside that path `observe` is not started until
+     * `convert()` runs. **The card cannot change height again before the tap**, which is a
+     * different claim from waiting longer.
      *
      * The `Container` row specifically, rather than a new "probing finished" tag in `main`, because
      * this fixture is an MP4 video and that row is already what
