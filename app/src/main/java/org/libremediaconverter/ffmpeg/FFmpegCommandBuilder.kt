@@ -53,6 +53,44 @@ object FFmpegCommandBuilder {
     /** Containers in the ISO base-media family, where HEVC needs the hvc1 brand. */
     private val MP4_FAMILY = setOf(Container.MP4, Container.MOV)
 
+    /**
+     * Ogg Vorbis, through libvorbis.
+     *
+     * ## This named an encoder the binary did not have, for as long as it existed
+     *
+     * These are the exact flags the arm carried before #254, and the arm had never run: `VORBIS`
+     * was absent from `ContainerCapabilities.ENCODABLE_AUDIO` and no `OutputFormat` offered it.
+     * It could not have run either. `--enable-libvorbis` was not in the AAR's configure line, and
+     * `strings` on the shipped `libavcodec.so` named `libx264`, `libx265`, `libvpx`, `libmp3lame`,
+     * `libopus`, `libdav1d`, `libsvtav1` and `libjxl` — no `libvorbis`. The first user to pick Ogg
+     * Vorbis would have got "Unknown encoder 'libvorbis'". #254 rebuilt the AAR with
+     * `--enable-libvorbis` (`bin/README.md` carries the new configure line and checksum) and made
+     * the arm reachable. The flags did not have to change; the binary under them did.
+     *
+     * **Nothing on the JVM can tell a real encoder name from a fictional one**, which is exactly
+     * how that survived four coverage waves. `FFmpegCommandBuilderTest` can only pin that this is
+     * what the builder emits. That `libvorbis` is really in there is proved by `FFmpegEngineTest`'s
+     * `encodesOggVorbisThroughAnEncoderTheBundledBinaryActuallyHas`, on a device, and by nothing
+     * else in this repo.
+     *
+     * Two flags are deliberately *absent*, and both would be forced by FFmpeg's in-tree `vorbis`
+     * encoder — the one the binary already had, and the one a first pass at #254 used:
+     *
+     *  - **no `-strict experimental`**. The in-tree encoder carries `AV_CODEC_CAP_EXPERIMENTAL`
+     *    and libavcodec refuses it without the flag. libvorbis is not experimental.
+     *  - **no `-ac 2`**. The in-tree encoder is stereo-only — *"Current FFmpeg Vorbis encoder only
+     *    supports 2 channels."* — so it would silently upmix a mono source and downmix a surround
+     *    one, a compromise this app makes nowhere else. libvorbis takes any channel count, so mono
+     *    stays mono — the e2e test's fixture is mono and it asserts the output still is.
+     *
+     * `-q:a 5` is libvorbis's classic ~160 kbps setting, and the scale behind it is the third
+     * reason for the rebuild. Over one 3 s clip libvorbis spans 10931..64166 bytes across q0..q10
+     * where the in-tree encoder spans 7549..14645 — so libvorbis at this setting (16429 bytes)
+     * already writes more than the in-tree encoder can at q10, and the knob has somewhere to go
+     * if this app ever exposes it.
+     */
+    private val VORBIS_ARGS = listOf("-c:a", "libvorbis", "-q:a", "5")
+
     fun build(request: ConversionRequest, inputPath: String, outputPath: String): List<String> {
         val plan = CopyPlanner.plan(request.spec, request.probe)
         return buildList {
@@ -185,7 +223,7 @@ object FFmpegCommandBuilder {
             AudioCodec.FLAC -> listOf("-c:a", "flac")
             AudioCodec.PCM -> listOf("-c:a", "pcm_s16le")
             AudioCodec.OPUS -> listOf("-c:a", "libopus", "-b:a", "128k")
-            AudioCodec.VORBIS -> listOf("-c:a", "libvorbis", "-q:a", "5")
+            AudioCodec.VORBIS -> VORBIS_ARGS
             else -> listOf("-c:a", "aac", "-b:a", "192k")
         }
     }

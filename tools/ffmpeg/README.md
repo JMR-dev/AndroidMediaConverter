@@ -60,11 +60,22 @@ Only `arm64-v8a` and `x86_64` are built, matching the app's `abiFilters`. Droppi
 
 ## Library selection
 
-Flag names come from `get_library_name()` in the upstream `scripts/function.sh`. Two
+Flag names come from `get_library_name()` in the upstream `scripts/function.sh`. Three
 that are easy to get wrong:
 
 - It is **`--enable-lame`**, not `--enable-libmp3lame`.
 - It is **`--enable-libsvtav1`** for SVT-AV1.
+- It *is* **`--enable-libvorbis`** — the rule above makes `--enable-vorbis` the natural
+  guess and it is wrong. Read the function rather than extrapolating from the first two;
+  library 9 is named `libvorbis` there. Enabling it also enables libogg, which ffmpeg-kit
+  pulls in as its dependency without being asked.
+
+**An unrecognised `--enable-*` is ignored silently.** ffmpeg-kit does not error on one, so a
+build that quietly dropped a library looks exactly like one that worked, and forty minutes
+later there is an AAR that is wrong in a way nothing in the log says. #254 is where that
+was learned, from the other end: the builder carried `-c:a libvorbis` for months against a
+binary with no libvorbis in it — unreachable, so no user ever hit it, and no build log ever
+mentioned it. Check the artifact, not the log — `strings jni/*/libavcodec.so | grep -x <name>`.
 
 MP3 deserves a note: **Android has no MP3 encoder at any API level**. That is a platform
 gap, not a Media3 limitation, so `--enable-lame` is the only way the app can output MP3.
@@ -100,11 +111,15 @@ and `x86_64`. Confirmed against the artifact rather than assumed:
   `--enable-gpl --enable-version3 --enable-libx264 --enable-libx265 --enable-libsvtav1
   --enable-libvpx --enable-libmp3lame --enable-libopus --enable-libdav1d --enable-libass
   --enable-libfontconfig --enable-libfreetype --enable-libfribidi --enable-libharfbuzz
-  --enable-mediacodec --enable-jni --enable-shared --enable-small --enable-lto`
+  --enable-mediacodec --enable-jni --enable-shared --enable-small --enable-lto`.
+  **Since 2026-09-06 it also carries `--enable-libvorbis`** (#254), which is the only
+  difference between that build and the one in `bin/` today — same tag, same FFmpeg
+  version, same 10 shared libraries per ABI, all still `LOAD align 0x4000`.
 - Present and verified: `libx264` (with an x264 core banner, so genuinely linked),
   `libx265`, `libsvtav1`, `libmp3lame`, `h264_mediacodec`, `hevc_mediacodec`, `libopus`,
-  `libdav1d`, the GIF encoder and muxer, libass internals (`ass_shaper_new`), and the
-  `subtitles`, `scale`, `palettegen`, `paletteuse` and `concat` filters.
+  `libdav1d`, `libvorbis` (from 2026-09-06), the GIF encoder and muxer, libass internals
+  (`ass_shaper_new`), and the `subtitles`, `scale`, `palettegen`, `paletteuse` and
+  `concat` filters.
 
 Note `--enable-version3`: combined with `--enable-gpl` this makes the binary **GPL-3.0**,
 which is what `LICENSES/README.md` states.

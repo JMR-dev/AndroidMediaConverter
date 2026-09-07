@@ -12,8 +12,19 @@ package org.libremediaconverter.model
  * and without it `.mka`, MP4 is `.mp4` or `.m4a`. That distinction is why they are functions rather
  * than properties.
  *
+ * The extension turned out to depend on a second thing, which is what [audioCodecExtensions] is
+ * for — see its parameter note.
+ *
  * @param ffmpegFormat the `-f` value. Named explicitly rather than left to extension inference,
  *   which is unreliable for MPEG-TS and ASF.
+ * @param audioCodecExtensions per-codec overrides of [audioExtension]. Ogg is the only container
+ *   that needs one, and it is the reason this parameter exists: one Ogg stream can hold Vorbis,
+ *   Opus or FLAC, and RFC 7845 §9 asks for `.opus` on an Ogg that carries Opus alone while
+ *   everything else in an Ogg is a plain `.ogg`. A single container-wide extension cannot say
+ *   both — and it said `opus` for *every* Ogg until [OutputFormat.OGG_VORBIS] existed, which
+ *   would have named a Vorbis file `.opus`. That is the same defect as the `FLAC` preset that
+ *   once declared Matroska with a `.flac` extension, which is what moved these fields onto the
+ *   container in the first place.
  */
 enum class Container(
     val label: String,
@@ -22,6 +33,7 @@ enum class Container(
     private val audioExtension: String,
     private val videoMime: String?,
     private val audioMime: String,
+    private val audioCodecExtensions: Map<AudioCodec, String> = emptyMap(),
 ) {
     MP4("MP4", "mp4", "mp4", "m4a", "video/mp4", "audio/mp4"),
     MOV("MOV", "mov", "mov", "m4a", "video/quicktime", "audio/mp4"),
@@ -32,7 +44,7 @@ enum class Container(
     FLV("FLV", "flv", "flv", "flv", "video/x-flv", "video/x-flv"),
     ASF("WMV/ASF", "asf", "wmv", "wma", "video/x-ms-wmv", "audio/x-ms-wma"),
 
-    OGG("Ogg", "ogg", null, "opus", null, "audio/ogg"),
+    OGG("Ogg", "ogg", null, "ogg", null, "audio/ogg", mapOf(AudioCodec.OPUS to "opus")),
     WAV("WAV", "wav", null, "wav", null, "audio/wav"),
     AAC_ADTS("AAC", "adts", null, "aac", null, "audio/aac"),
     MP3("MP3", "mp3", null, "mp3", null, "audio/mpeg"),
@@ -45,7 +57,17 @@ enum class Container(
     /** Whether this container can hold a video track at all. */
     val canHoldVideo: Boolean get() = videoExtension != null
 
-    fun extensionFor(hasVideo: Boolean): String = if (hasVideo) videoExtension ?: audioExtension else audioExtension
+    /**
+     * The filename extension for an output in this container.
+     *
+     * [audioCodec] takes no default on purpose. A default would let a caller get `.ogg` for an
+     * Opus output by saying nothing, which is exactly the silent-wrong-answer shape the audio
+     * codec argument was added to close.
+     */
+    fun extensionFor(hasVideo: Boolean, audioCodec: AudioCodec): String = when {
+        hasVideo -> videoExtension ?: audioExtension
+        else -> audioCodecExtensions[audioCodec] ?: audioExtension
+    }
 
     fun mimeTypeFor(hasVideo: Boolean): String = if (hasVideo) videoMime ?: audioMime else audioMime
 }
@@ -102,7 +124,7 @@ data class OutputSpec(val container: Container, val videoCodec: VideoCodec, val 
             audioCodec.isCopyOrAbsent() &&
             (videoCodec == VideoCodec.COPY || audioCodec == AudioCodec.COPY)
 
-    val extension: String get() = container.extensionFor(hasVideo)
+    val extension: String get() = container.extensionFor(hasVideo, audioCodec)
     val mimeType: String get() = container.mimeTypeFor(hasVideo)
 
     private fun VideoCodec.isCopyOrAbsent() = this == VideoCodec.COPY || this == VideoCodec.NONE
@@ -129,6 +151,19 @@ enum class OutputFormat(val label: String, val spec: OutputSpec) {
     MP3("MP3", OutputSpec(Container.MP3, VideoCodec.NONE, AudioCodec.MP3)),
     M4A_AAC("M4A (AAC)", OutputSpec(Container.MP4, VideoCodec.NONE, AudioCodec.AAC)),
     OPUS("Opus", OutputSpec(Container.OGG, VideoCodec.NONE, AudioCodec.OPUS)),
+
+    /**
+     * The other codec Ogg carries, and the only preset added to make an existing arm reachable.
+     *
+     * `FFmpegCommandBuilder` has emitted a Vorbis encoder since the builder was written, and
+     * nothing could ask for it: no preset produced [AudioCodec.VORBIS] and `ContainerCapabilities`
+     * refused it on the Advanced picker, so the arm was dead in both directions (#254). It was also
+     * naming `libvorbis`, which the bundled FFmpeg did not carry until that same ticket rebuilt it,
+     * so making it reachable meant rebuilding the binary under it. Named for
+     * the container as well as the codec because [OPUS] shares that container and the two produce
+     * differently-named files — `.opus` against `.ogg`.
+     */
+    OGG_VORBIS("Ogg Vorbis", OutputSpec(Container.OGG, VideoCodec.NONE, AudioCodec.VORBIS)),
     FLAC("FLAC", OutputSpec(Container.FLAC, VideoCodec.NONE, AudioCodec.FLAC)),
     WAV("WAV", OutputSpec(Container.WAV, VideoCodec.NONE, AudioCodec.PCM)),
 

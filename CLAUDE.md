@@ -76,7 +76,7 @@ days. Read it as the current answer, and see the git history if you need the old
   `angle_indirect` and `swangle_indirect` all boot, while `auto`, `off`, `guest` and
   `swiftshader_indirect` do not. `docs/local-emulator.md` has the evidence and the per-API renderer
   table.
-- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Seven** of the 71 instrumented
+- **CI runs API 37, and it gates.** The matrix is 33/34/35/36/37. **Seven** of the 72 instrumented
   tests cannot be *run* on that image, for three measured reasons and two inherited: three Media3
   tests fail inside the emulator's own `c2.goldfish.h264.decoder`, one SAF test takes the framework
   down when it rotates the display, and its sibling — the SAF picker round trip — aborts
@@ -88,9 +88,11 @@ days. Read it as the current answer, and see the git history if you need the old
   Media3 tests plus the rotation — runs 34041156680, 34041593697, 34042397320, 34043502322 and
   34045105857. **No picker test has ever reported on the advisory leg**, which is a correction to
   what the marker's own KDoc used to say. All seven carry `@FailsOnEmulatorApi37` and run in a
-  separate `continue-on-error` job; the gating leg runs the other 64 — **the same 64 for the third
-  time running**, which is exactly how this paragraph goes stale unnoticed: 69−5, 70−6 and 71−7
-  are all 64.
+  separate `continue-on-error` job; the gating leg runs the other **65**. That figure had been 64
+  three times running — 69−5, 70−6 and 71−7 are all 64 — which is exactly how this paragraph went
+  stale unnoticed, because the one number a reader checks against a run had not moved while the
+  suite grew twice underneath it. #254 is the first change since to move it, by adding a test and
+  no marker.
 
   **These two numbers move with the suite and are derived, not remembered.** `grep -cE
   '^\s*@Test' ` over `app/src/androidTest` is the first; the second is that minus the marker
@@ -430,6 +432,14 @@ install for code that can never run — and on API 37 the full APK does not fit 
   invalidates it, and the JVM gate runs unconditionally. **There is deliberately no skip
   variable**, and `--no-verify` needs the repo owner's say-so each time rather than being reached
   for when the gate is inconvenient.
+
+  **What that keying cannot see is `bin/`.** The classifier matches `app/src/main/*` and
+  `app/src/{test,androidTest}/*` and nothing else, so a commit that replaces only the committed
+  FFmpeg AAR — a *different native binary* under every instrumented test — invalidates no cache and
+  sweeps nothing, while the JVM gate that does run cannot execute FFmpeg at all. #254 is where that
+  was noticed, and it did not hit it: the AAR and the `app/src` change that needs it are one commit,
+  so the sweep ran. An AAR rebuilt on its own would not be, and should be committed alongside
+  something under `app/src` or swept by hand.
 
   Why it is worth tens of minutes a commit: the alternative was measured on 2026-09-06, when one PR
   spent several gating legs learning one leg at a time what a sweep answers in one pass — and the

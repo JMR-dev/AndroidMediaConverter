@@ -19,6 +19,16 @@ import org.junit.Test
  */
 class ContainerCapabilitiesTest {
 
+    /**
+     * The codecs the matrix can actually be asked about.
+     *
+     * `COPY` and `NONE` are excluded because [ContainerCapabilities.accepts] refuses the first
+     * outright — `resolving COPY before asking the matrix is required` covers that — and answers
+     * the second `true` for every container without consulting any table.
+     */
+    private val realAudioCodecs = AudioCodec.entries - AudioCodec.COPY - AudioCodec.NONE
+    private val realVideoCodecs = VideoCodec.entries - VideoCodec.COPY - VideoCodec.NONE
+
     private val h264Source = InputProbe(
         videoCodec = "h264",
         audioCodec = "aac",
@@ -79,10 +89,50 @@ class ContainerCapabilitiesTest {
     }
 
     @Test
-    fun `Matroska carries Vorbis on copy but nothing here encodes it`() {
-        assertTrue(ContainerCapabilities.accepts(Container.MKV, AudioCodec.VORBIS, CodecMode.COPY))
+    fun `Matroska carries VP8 on copy but nothing here encodes it`() {
+        assertTrue(ContainerCapabilities.accepts(Container.MKV, VideoCodec.VP8, CodecMode.COPY))
         assertFalse(
-            ContainerCapabilities.accepts(Container.MKV, AudioCodec.VORBIS, CodecMode.ENCODE),
+            ContainerCapabilities.accepts(Container.MKV, VideoCodec.VP8, CodecMode.ENCODE),
+        )
+    }
+
+    /**
+     * Where the copy/encode gap actually is, asserted as a set rather than as examples.
+     *
+     * This used to have an audio twin — Matroska carries Vorbis, and nothing was thought to encode
+     * it. That was never true of the code: `FFmpegCommandBuilder` has emitted a Vorbis encoder
+     * since it was written, and only `ENCODABLE_AUDIO`'s omission made the arm unreachable (#254).
+     * With Vorbis in the set, **the audio gap is empty** and the mode axis earns its place on the
+     * video side alone.
+     *
+     * Two consequences worth having pinned rather than rediscovered:
+     *
+     *  - `validateAudio`'s "this app cannot encode X audio" arm now has no reachable input, which
+     *    is why no test drives it. It stays in production as the landing spot for the first ALAC
+     *    or AC-3 entry, and this test is what will fail the day one is carried without an encoder
+     *    — where before, an omission like Vorbis's could sit unnoticed for the life of the file.
+     *  - The video list is the real one, and asserting it as a set is what makes an accidental
+     *    addition visible: an encoder added for VP8 without a matching `ENCODABLE_VIDEO` entry
+     *    would leave this passing, but a *carried* codec quietly dropped from the encodable set
+     *    would not.
+     */
+    @Test
+    fun `the copy-only gap is video-only, and VP8 and AV1 are all of it`() {
+        fun <T> gap(codecs: List<T>, accepts: (Container, T, CodecMode) -> Boolean): Set<T> =
+            Container.entries.flatMap { container ->
+                codecs
+                    .filter { accepts(container, it, CodecMode.COPY) }
+                    .filterNot { accepts(container, it, CodecMode.ENCODE) }
+            }.toSet()
+
+        assertEquals(
+            "no container may carry an audio codec this app cannot also encode",
+            emptySet<AudioCodec>(),
+            gap(realAudioCodecs, ContainerCapabilities::accepts),
+        )
+        assertEquals(
+            setOf(VideoCodec.VP8, VideoCodec.AV1),
+            gap(realVideoCodecs, ContainerCapabilities::accepts),
         )
     }
 
@@ -405,21 +455,30 @@ class ContainerCapabilitiesTest {
         assertEverySuggestionValid(invalid, mp3Source)
     }
 
+    /**
+     * The spec that used to be this class's example of an unencodable audio codec, now valid.
+     *
+     * It asserted `"This app cannot encode Vorbis audio. It can still be copied from a Vorbis
+     * source."` for exactly this spec, and the message was wrong about the app: the encoder
+     * existed, unreachable (#254). Asserting the positive is what stops the omission coming back —
+     * a revert of `ENCODABLE_AUDIO` fails here rather than merely restoring an old refusal that
+     * reads plausible.
+     *
+     * The audio arm it used to cover no longer has a reachable input; `the copy-only gap is
+     * video-only` above is where that is now recorded, and `copying is offered as the fix when the
+     * codec is right but unencodable` still covers the live video half of the same rule.
+     */
     @Test
-    fun `an audio codec this app cannot encode is refused, and copying is offered instead`() {
-        // Matroska carries Vorbis; nothing here encodes it. The refusal has to say so *and* say
-        // what would work, which is the audio twin of `copying is offered as the fix when the codec
-        // is right but unencodable`.
+    fun `Vorbis into Matroska is a re-encode this app will do`() {
         val spec = OutputSpec(Container.MKV, VideoCodec.H264, AudioCodec.VORBIS)
 
-        val invalid = ContainerCapabilities.validate(spec, h264Source) as? Validation.Invalid
-            ?: throw AssertionError("encoding Vorbis must be refused")
-
-        assertEquals(
-            "This app cannot encode Vorbis audio. It can still be copied from a Vorbis source.",
-            invalid.message,
+        assertTrue(
+            "Vorbis is encodable, so this spec must validate: ${ContainerCapabilities.validate(spec, h264Source)}",
+            ContainerCapabilities.validate(spec, h264Source).isValid,
         )
-        assertEverySuggestionValid(invalid, h264Source)
+        // The plan has to reach the encoder, not merely be permitted: an AAC source into Matroska
+        // cannot be upgraded to a copy, so this is an Encode carrying the codec that was asked for.
+        assertEquals(AudioPlan.Encode(AudioCodec.VORBIS), CopyPlanner.plan(spec, h264Source).audio)
     }
 
     @Test

@@ -75,9 +75,14 @@ class OutputFormatTest {
     fun `every container names an extension, a mime type and an ffmpeg muxer`() {
         Container.entries.forEach { container ->
             listOf(true, false).forEach { hasVideo ->
-                val ext = container.extensionFor(hasVideo)
-                assertTrue("$container has no extension", ext.isNotBlank())
-                assertFalse("$container extension has a dot", ext.startsWith("."))
+                // Every audio codec, because the extension now varies by one — see the Ogg pair
+                // below. A container that answered blank for a codec it carries would be a
+                // filename with no extension at all.
+                AudioCodec.entries.forEach { audioCodec ->
+                    val ext = container.extensionFor(hasVideo, audioCodec)
+                    assertTrue("$container/$audioCodec has no extension", ext.isNotBlank())
+                    assertFalse("$container/$audioCodec extension has a dot", ext.startsWith("."))
+                }
                 assertTrue(
                     "$container has no mime type",
                     container.mimeTypeFor(hasVideo).contains('/'),
@@ -89,10 +94,34 @@ class OutputFormatTest {
 
     @Test
     fun `audio-only variants of a container get their own extension`() {
-        assertEquals("mp4", Container.MP4.extensionFor(hasVideo = true))
-        assertEquals("m4a", Container.MP4.extensionFor(hasVideo = false))
-        assertEquals("mkv", Container.MKV.extensionFor(hasVideo = true))
-        assertEquals("mka", Container.MKV.extensionFor(hasVideo = false))
+        assertEquals("mp4", Container.MP4.extensionFor(hasVideo = true, audioCodec = AudioCodec.AAC))
+        assertEquals("m4a", Container.MP4.extensionFor(hasVideo = false, audioCodec = AudioCodec.AAC))
+        assertEquals("mkv", Container.MKV.extensionFor(hasVideo = true, audioCodec = AudioCodec.AAC))
+        assertEquals("mka", Container.MKV.extensionFor(hasVideo = false, audioCodec = AudioCodec.AAC))
+    }
+
+    /**
+     * The second thing the extension depends on, and the reason [Container.extensionFor] takes a
+     * codec at all.
+     *
+     * One Ogg stream holds Vorbis or Opus, and the two are named differently: RFC 7845 §9 asks for
+     * `.opus` on an Ogg carrying Opus alone, while a Vorbis one is a plain `.ogg`. The container
+     * declared `opus` for every Ogg until [OutputFormat.OGG_VORBIS] existed, which would have
+     * shipped a Vorbis file called `.opus` — the same shape as the `FLAC` preset that once
+     * declared Matroska with a `.flac` extension, which is the regression guarded above.
+     *
+     * Both halves are asserted. Pinning only the Vorbis one would pass just as well if the
+     * override map were deleted and every Ogg went back to a single extension, which is the
+     * mutation that has to fail.
+     */
+    @Test
+    fun `Ogg names its file after the codec in it, not after the container`() {
+        assertEquals("opus", OutputFormat.OPUS.extension)
+        assertEquals("ogg", OutputFormat.OGG_VORBIS.extension)
+        // The MIME type does not split the same way: audio/ogg is correct for both, so the SAF
+        // create-document contract sees one type for the two formats.
+        assertEquals("audio/ogg", OutputFormat.OPUS.mimeType)
+        assertEquals("audio/ogg", OutputFormat.OGG_VORBIS.mimeType)
     }
 
     /** Regression guard: FLAC used to be declared as Matroska with a `.flac` extension. */

@@ -330,6 +330,28 @@ class ConversionRouterTest {
         }
     }
 
+    /**
+     * Ogg Vorbis leaves the hardware path one rule earlier than its Ogg sibling, and the reason
+     * shown to the user is the difference.
+     *
+     * Two rules would each send it to FFmpeg — Media3 cannot encode Vorbis, and it cannot write
+     * Ogg at all — and the order decides which explanation appears. The audio-encoder check runs
+     * first deliberately: `NO_PLATFORM_ENCODER` ("Android has no encoder for this format") is true
+     * of Vorbis on every Android version and tells the user something about their choice, where
+     * `CONTAINER_UNSUPPORTED` would name an internal boundary they cannot act on. That ordering is
+     * documented in the router and this is what holds it — asserting only the engine would pass
+     * with the two rules swapped.
+     */
+    @Test
+    fun `ogg vorbis routes to ffmpeg because Android has no Vorbis encoder`() {
+        val d = route(OutputFormat.OGG_VORBIS)
+        assertEquals(Engine.FFMPEG, d.engine)
+        assertEquals(Reason.NO_PLATFORM_ENCODER, d.reason)
+        // The sibling in the same container stops at the container rule instead, because Media3
+        // *can* encode Opus. One container, two reasons, and only the codec differs.
+        assertEquals(Reason.CONTAINER_UNSUPPORTED, route(OutputFormat.OPUS).reason)
+    }
+
     /** M4A is the audio format that does stay on hardware, because its container is MP4. */
     @Test
     fun `m4a stays on hardware because MP4 is a container Media3 can write`() {

@@ -48,6 +48,8 @@ Everything Media3 structurally cannot do:
 
 - Containers outside MP4/WebM/Ogg/WAV/AAC — MKV, MOV, AVI, FLV, MPEG-TS, WMV/ASF
 - **MP3 output** — Android has no MP3 encoder at any version; this is a platform gap
+- **Ogg Vorbis output** — the same gap: Android has no Vorbis encoder either. Encoded with
+  `libvorbis`, which the bundled build carries since #254
 - GIF and image sequences
 - Input codecs with no platform decoder on the device
 - CRF and 2-pass rate control, for the quality tier

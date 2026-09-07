@@ -22,19 +22,33 @@ It also removes roughly forty minutes from every cold CI run.
 | API level | 33, matching the app's minSdk |
 | ABIs | arm64-v8a, x86_64 |
 | Shared libraries | 20 (10 per ABI) |
-| SHA-256 | `ae188c9aec3c89a1c87a169589253c85438d57cfdcc3ce8b40fb3e87de368ff2` |
+| SHA-256 | `c8f4491d2c626566cbf18d5035513c1a5d8049e6696531342ea030c5427df507` |
+| Rebuilt | 2026-09-06, to add libvorbis (#254). Previous archive: `ae188c9a…`, same tag and FFmpeg version, one library fewer |
 
 Configure line, read back out of the shipped `libavutil.so`:
 
 ```
---enable-asm --enable-cross-compile --enable-gpl --enable-iconv 
---enable-inline-asm --enable-jni --enable-libass --enable-libdav1d 
---enable-libfontconfig --enable-libfreetype --enable-libfribidi 
---enable-libharfbuzz --enable-libjxl --enable-libmp3lame --enable-libopus 
---enable-libsvtav1 --enable-libvpx --enable-libx264 --enable-libx265 
---enable-lto --enable-mediacodec --enable-neon --enable-optimizations 
---enable-pic --enable-pthreads --enable-shared --enable-small 
---enable-swscale --enable-v4l2-m2m --enable-version3 --enable-zlib 
+--enable-asm --enable-cross-compile --enable-gpl --enable-iconv
+--enable-inline-asm --enable-jni --enable-libass --enable-libdav1d
+--enable-libfontconfig --enable-libfreetype --enable-libfribidi
+--enable-libharfbuzz --enable-libjxl --enable-libmp3lame --enable-libopus
+--enable-libsvtav1 --enable-libvorbis --enable-libvpx --enable-libx264
+--enable-libx265 --enable-lto --enable-mediacodec --enable-neon
+--enable-optimizations --enable-pic --enable-pthreads --enable-shared
+--enable-small --enable-swscale --enable-v4l2-m2m --enable-version3
+--enable-zlib
+```
+
+`--enable-libvorbis` is the one that arrived late, in #254, and the two ways to get it wrong are
+worth having written down. ffmpeg-kit's `--enable-*` names are its own — `--enable-lame` for
+libmp3lame, `--enable-opus` for libopus — so `--enable-vorbis` is the plausible guess and it is not
+the flag; `get_library_name()` in the upstream `scripts/function.sh` calls library 9 `libvorbis`.
+And an unrecognised `--enable-*` is **ignored silently**, so a build that dropped it looks exactly
+like one that worked. What tells them apart is the binary:
+
+```sh
+unzip -p bin/ffmpeg-kit-next-8.1.1.aar 'jni/x86_64/libavcodec.so' > /tmp/libavcodec.so
+strings /tmp/libavcodec.so | grep -x libvorbis     # and the same for arm64-v8a
 ```
 
 Every `.so` reports `LOAD align 0x4000`, so the archive satisfies the 16 KB page-size

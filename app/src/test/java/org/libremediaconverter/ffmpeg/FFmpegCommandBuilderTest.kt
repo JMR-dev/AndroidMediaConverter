@@ -167,6 +167,47 @@ class FFmpegCommandBuilderTest {
     }
 
     /**
+     * The arm that named an encoder the shipped binary did not contain.
+     *
+     * This read `-c:a libvorbis` from the day the builder was written and had never been run: no
+     * preset produced [AudioCodec.VORBIS] and `ContainerCapabilities` refused it. It could not
+     * have worked either — `--enable-libvorbis` was in neither `bin/README.md`'s configure line
+     * nor `tools/ffmpeg/build-ffmpeg.sh`, and the string `libvorbis` was not in the shipped
+     * `libavcodec.so` while `libopus`, `libmp3lame`, `libx264` and five others were. #254 rebuilt
+     * the AAR with it.
+     *
+     * **What this test cannot do is tell you that.** `-c:a libvorbis` and `-c:a libvorbisss` are
+     * the same string to a JVM assertion, which is precisely how the defect survived four coverage
+     * waves and a review that asked whether every test asserted something. The positive claim —
+     * that this encoder exists in the binary and produces a Vorbis track — is proved by
+     * `FFmpegEngineTest.encodesOggVorbisThroughAnEncoderTheBundledBinaryActuallyHas` on a device,
+     * and by nothing else in this repo.
+     *
+     * The two negatives are the assertions that carry real weight here, because each pins a
+     * decision rather than a name. `-strict experimental` and `-ac 2` are what FFmpeg's in-tree
+     * `vorbis` encoder forces, and taking the in-tree encoder would silently upmix mono; the arm's
+     * KDoc has the measurements. `-f ogg` is asserted because encoder and muxer together are what
+     * make the file — an encoder without its muxer is how a Vorbis stream ends up in a container
+     * that will not open.
+     */
+    @Test
+    fun `ogg vorbis names libvorbis, with no experimental gate and no forced stereo`() {
+        val args = cmd(OutputFormat.OGG_VORBIS)
+
+        assertPair(args, "-c:a", "libvorbis")
+        assertPair(args, "-q:a", "5")
+        assertPair(args, "-f", "ogg")
+        assertFalse(
+            "libvorbis is not experimental; -strict belongs to FFmpeg's in-tree encoder: $args",
+            args.contains("-strict"),
+        )
+        assertFalse(
+            "libvorbis takes any channel count, so mono must not be upmixed: $args",
+            args.contains("-ac"),
+        )
+    }
+
+    /**
      * The arm most conversions actually take, and the only one in `audioArgs` with no test.
      *
      * `flac wav and opus select the right encoders` above covers the three named arms; MP3 has its
@@ -216,7 +257,13 @@ class FFmpegCommandBuilderTest {
 
     @Test
     fun `audio only formats never carry a video encoder`() {
-        listOf(OutputFormat.MP3, OutputFormat.FLAC, OutputFormat.WAV, OutputFormat.OPUS)
+        listOf(
+            OutputFormat.MP3,
+            OutputFormat.FLAC,
+            OutputFormat.WAV,
+            OutputFormat.OPUS,
+            OutputFormat.OGG_VORBIS,
+        )
             .forEach { format ->
                 val args = cmd(format)
                 assertFalse("$format should not set -c:v", args.contains("-c:v"))
