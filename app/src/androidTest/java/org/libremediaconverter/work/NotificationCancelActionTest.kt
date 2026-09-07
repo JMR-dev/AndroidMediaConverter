@@ -37,10 +37,16 @@ import java.util.concurrent.TimeUnit
  * ## Why this fires the intent rather than reading the shade
  *
  * The obvious version asks `NotificationManager.getActiveNotifications()` for id 1001 and taps what
- * it finds. That was rejected: the instrumented suite grants no runtime permissions, so
- * `POST_NOTIFICATIONS` is denied throughout, and whether a suppressed foreground-service
- * notification is returned there is a platform detail that varies — the test would be asserting
- * something about notification *visibility* rather than about cancellation.
+ * it finds. That was rejected because it would be asserting something about notification
+ * *visibility* rather than about cancellation — and because whether the shade holds the
+ * notification at all is not this class's to know.
+ *
+ * **It used to say `POST_NOTIFICATIONS` is denied throughout, and since #268 that is no longer
+ * true.** `SafPickerRoundTripTest` grants it in `@Before`, so that its Convert tap cannot open a
+ * permission dialog, and a runtime grant cannot be undone in teardown without restarting the app's
+ * process. The suite runs without Orchestrator, so whether this class sees the permission held
+ * depends on class order — which is exactly the reading this test does not do, and the reason it
+ * stays the right shape rather than a reason to change it.
  *
  * The `PendingIntent` is the subject; where it is read from is incidental. Building the
  * notification for a real, live work id and firing its action exercises exactly the thing that can
