@@ -148,6 +148,17 @@ Still true, and the reason the advisory job is not simply deleted: **API 37 need
 the Pixel 10 Pro XL before each release.** Those seven tests are the one thing CI cannot answer
 for.
 
+**When a gating leg goes red on a diff that cannot explain it, read `docs/ci-failure-modes.md`
+before anything else.** It is the census of all 129 gating failures in the repo's history against
+1489 leg-attempts, with a per-mode disposition, and it is what closed #102. Three things from it
+that are easy to get wrong and expensive: **count per leg-attempt, never per run** — a re-run to
+green replaces the conclusion, so counting runs sees about 40% of the failures; **every mode has
+its own denominator**, because the API 37 row filters seven tests out and some tests are younger
+than the window; and **a re-run destroys the log** — `gh run view --job <id> --log` resolves by run
+and serves the latest attempt, so capture evidence before retrying, or read the attempt through
+`gh api /repos/.../actions/jobs/{job_id}/logs`. The artifacts do survive, one per attempt under the
+same name; `gh run download` takes the newest, which is the wrong one.
+
 On a device or emulator, build only the ABI it can execute:
 
 ```bash

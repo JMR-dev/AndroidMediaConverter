@@ -1018,14 +1018,21 @@ class SafPickerRoundTripTest {
      * would click whatever system window happened to be there. `aerr_wait` first: it dismisses the
      * dialog and leaves the offending app alone, which is the polite answer when the app is not
      * ours. Back is not tried — `BaseErrorDialog` swallows key events.
+     *
+     * **Returns whether it clicked anything, and the caller has to care.** Dismissing the dialog
+     * changes the window focus, so every reading taken before this ran is stale afterwards —
+     * which is the whole of #102's `MainActivity`-destroyed mode. [requireAReadableScreen] already
+     * re-probes after calling this; [dismissThePicker] could not, because it had no way to know
+     * whether there had been anything to dismiss.
      */
-    private fun dismissASystemErrorDialog() {
+    private fun dismissASystemErrorDialog(): Boolean {
         for (id in ERROR_DIALOG_BUTTONS) {
             val button = device.findObject(By.res(id)) ?: continue
             button.click()
             device.waitForIdle()
-            return
+            return true
         }
+        return false
     }
 
     /**
@@ -1157,6 +1164,41 @@ class SafPickerRoundTripTest {
      * enough from Recent and two are needed from inside the root, but a third from Recent would
      * finish `MainActivity` and take the rest of the test with it.
      *
+     * **That hazard was reached, and the guard above is why it could be** (#102). A system
+     * app-error dialog is a fullscreen `system_server` window, so it takes the focus away from
+     * `MainActivity` too — [awaitAppFocus] cannot tell "the picker is still up" from "a dialog is
+     * on top of an app that is already in front". Measured on the API 35 gating leg of run
+     * `34161043035` attempt 1, which is #269's own head:
+     *
+     * ```
+     * 20:59:36.033  MainActivity RESUMED            <- the save picker has already returned
+     * 20:59:41.094  UiDevice: Retrieving node with selector: BySelector [RES='android:id/aerr_wait']
+     * 20:59:41.169  Input channel object 'Application Not Responding:
+     *                 com.google.android.apps.nexuslauncher' was disposed
+     * 20:59:41.713  UiDevice: Pressing back button.
+     * 20:59:41.754  TopTaskTracker: onTaskMovedToFront: ... NexusLauncherActivity
+     * 20:59:42.278  MainActivity DESTROYED
+     * ```
+     *
+     * The launcher's ANR dialog — #93's occluder, still ambient on these runners — was the only
+     * reason the focus read false. Removing it made the app focused, and the back press aimed at a
+     * picker that had closed five seconds earlier finished `MainActivity` instead. Every later
+     * `onActivity` in the test then threw
+     * `NullPointerException: Cannot run onActivity since Activity has been destroyed already`.
+     *
+     * **So the reading is retaken after the dialog goes, and only then.** This removes a back
+     * press sent on a stale reading; it does not retry one, and it does not make the dismissal
+     * more tolerant. A picker that really is in front still leaves the app unfocused, so the press
+     * still happens and a genuinely stuck picker still fails here. On the ordinary path — no
+     * dialog — nothing is re-read and nothing is waited on, which is why the check is behind the
+     * `&&`. [requireAReadableScreen] has always re-probed after dismissing a dialog; this is the
+     * same rule in the one place that did not follow it.
+     *
+     * **It cannot be proved by re-running**, and that is worth saying rather than glossing: the
+     * launcher ANR is ambient and unreproducible on demand, so a green sweep is not evidence. What
+     * the fix rests on is the trace above: the launcher comes to the front 41 ms after a back press
+     * that this change does not send, and the Activity is destroyed 565 ms after that.
+     *
      * **[forceStopThePicker] is the escalation after the presses, and it exists because a back
      * press is not always deliverable.** See its own KDoc for the measurement.
      */
@@ -1167,7 +1209,11 @@ class SafPickerRoundTripTest {
             // so a back aimed at the picker lands on the dialog and nothing moves. Measured --
             // API 34 of run 32813885120 exhausted all four presses with `android` in front, which
             // is that dialog, while the launcher it belonged to went on ANRing behind everything.
-            dismissASystemErrorDialog()
+            //
+            // And re-read the focus if one was dismissed: the dialog is itself a reason the
+            // reading above can be false, so a press sent on it can land on an app that is
+            // already in front. See the KDoc -- that is how MainActivity got destroyed.
+            if (dismissASystemErrorDialog() && awaitAppFocus()) return
             device.pressBack()
         }
         // The check after the last press, and not a spare one: `repeat` presses on its final
