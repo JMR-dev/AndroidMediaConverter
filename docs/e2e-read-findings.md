@@ -563,10 +563,15 @@ and is not.
 
 E8 warned that the union's branch denominator ran 16 ahead of the JVM's, "entirely inside
 `MediaProbe`", and told readers not to quote a MediaProbe branch figure raw. Rebuilt, both
-denominators are **1338** and `MediaProbe:321` (`matroskaOrWebm`, the only string-literal `when` in
-that file) reads `mb=0 cb=4` — fully covered. All 16 sat on that one line. So it was an artefact of
-how the report was constructed and never a property of the code, and E8's caveat is withdrawn rather
-than carried forward. `matroskaOrWebm` is not, and never was, a gap.
+denominators are **1338**, and `MediaProbe:321` (`matroskaOrWebm`) reads `mb=0 cb=4` — fully
+covered, against `mb=11` of 20 before.
+
+**Stated as measured, because this entry is about a number that was quoted past its evidence.** That
+one line accounts for a 16-branch difference, and the two denominators now agree. The remaining
+lines were *not* enumerated in both reports, so read that as consistent with the whole gap sitting
+at `:321` rather than as proof that nothing moved elsewhere. Either way the difference is an
+artefact of how the report was constructed and not a property of the code, so E8's caveat is
+withdrawn rather than carried forward: `matroskaOrWebm` is not, and never was, a gap.
 
 ### The result: 23 arms on 22 lines, and 12 of the 22 are decided here
 
