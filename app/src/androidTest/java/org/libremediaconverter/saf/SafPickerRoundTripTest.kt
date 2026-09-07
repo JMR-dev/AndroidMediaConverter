@@ -978,6 +978,8 @@ class SafPickerRoundTripTest {
     private fun requireAReadableScreen() {
         val app = By.pkg(appPackage)
         if (device.wait(Until.hasObject(app), READABLE_TIMEOUT_MS) == true) return
+        // The return value is deliberately dropped here: the wait on the next line IS the re-probe
+        // that dismissThePicker had to be given, so there is nothing for it to gate.
         dismissASystemErrorDialog()
         if (device.wait(Until.hasObject(app), READABLE_TIMEOUT_MS) == true) return
         unlockTheDevice()
@@ -1171,20 +1173,30 @@ class SafPickerRoundTripTest {
      * `34161043035` attempt 1, which is #269's own head:
      *
      * ```
-     * 20:59:36.033  MainActivity RESUMED            <- the save picker has already returned
-     * 20:59:41.094  UiDevice: Retrieving node with selector: BySelector [RES='android:id/aerr_wait']
+     * 20:59:35.689  UiObject2: Clicking on (927, 2274)      <- iteration 2's dismissal, on button1
+     * 20:59:36.033  MainActivity RESUMED                    <- so the picker is gone, by our hand
+     * 20:59:36.350  VRI[PickActivity]: visibilityChanged ... newVisibility=false
+     * 20:59:37.068  UiDevice: Pressing back button.         <- iteration 2 presses anyway
+     * 20:59:41.094  UiDevice: Retrieving node ... [RES='android:id/aerr_wait']
      * 20:59:41.169  Input channel object 'Application Not Responding:
      *                 com.google.android.apps.nexuslauncher' was disposed
-     * 20:59:41.713  UiDevice: Pressing back button.
+     * 20:59:41.713  UiDevice: Pressing back button.         <- iteration 3
      * 20:59:41.754  TopTaskTracker: onTaskMovedToFront: ... NexusLauncherActivity
      * 20:59:42.278  MainActivity DESTROYED
      * ```
      *
-     * The launcher's ANR dialog — #93's occluder, still ambient on these runners — was the only
-     * reason the focus read false. Removing it made the app focused, and the back press aimed at a
-     * picker that had closed five seconds earlier finished `MainActivity` instead. Every later
-     * `onActivity` in the test then threw
+     * Read the first two lines before the rest, because they are the part that is easy to get
+     * wrong: **the picker did not close on its own — this function closed it**, on iteration 2,
+     * when [dismissASystemErrorDialog] fell through to `android:id/button1` and clicked what was
+     * almost certainly DocumentsUI's own positive button (#271). From `20:59:36.033` onwards there
+     * was nothing left to back out of. Iteration 2 pressed back regardless, iteration 3 dismissed
+     * the launcher's ANR dialog — #93's occluder, still ambient on these runners, and the only
+     * remaining reason the focus read false — and pressed again, and that press finished
+     * `MainActivity`. Every later `onActivity` in the test then threw
      * `NullPointerException: Cannot run onActivity since Activity has been destroyed already`.
+     *
+     * **With the re-read below, iteration 2 returns** — the app is focused within a second of the
+     * `button1` click — and iterations 2 and 3 never press at all.
      *
      * **So the reading is retaken after the dialog goes, and only then.** This removes a back
      * press sent on a stale reading; it does not retry one, and it does not make the dismissal

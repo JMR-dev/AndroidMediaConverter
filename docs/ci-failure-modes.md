@@ -4,7 +4,8 @@
 with a disposition for each. **1489 gating leg-attempts, 129 failures, 8.7%** — 2026-08-20 to
 2026-09-07. This is the standing answer to "my docs-only PR turned an emulator leg red, what is
 it?", and it is what #102 asked for before being closed as an umbrella.
-**Last verified:** 2026-09-07, against `main` at `ef9d35e`.
+**Last verified:** 2026-09-07, against `main` at `ef9d35e`. Mode 6's fix is in #272 and is the only
+thing here not yet on `main`.
 
 This document is about **the emulator failing underneath the suite**. It is not a defect record
 (`docs/defect-audit.md`), not a coverage read (`docs/coverage-read-findings.md`), and not a
@@ -108,20 +109,28 @@ Traced on the API 35 gating leg of run `34161043035` **attempt 1**, whose head i
 commit:
 
 ```
-20:59:36.033  MainActivity RESUMED           <- the save picker has already returned
-20:59:37.068  UiDevice: Pressing back button.
+20:59:35.689  UiObject2: Clicking on (927, 2274)   <- iteration 2's dismissal, on button1
+20:59:36.033  MainActivity RESUMED                 <- the picker is gone, by the test's own hand
+20:59:36.350  VRI[PickActivity]: visibilityChanged ... newVisibility=false
+20:59:37.068  UiDevice: Pressing back button.      <- iteration 2 presses anyway
 20:59:41.094  UiDevice: Retrieving node ... [RES='android:id/aerr_wait']
 20:59:41.169  Input channel 'Application Not Responding: ...nexuslauncher' was disposed
-20:59:41.713  UiDevice: Pressing back button.
+20:59:41.713  UiDevice: Pressing back button.      <- iteration 3
 20:59:41.754  TopTaskTracker: onTaskMovedToFront: ... NexusLauncherActivity
 20:59:42.278  MainActivity DESTROYED
 ```
 
 `dismissThePicker` guarded its back presses on `Activity.hasWindowFocus`. A system app-error dialog
 is a fullscreen `system_server` window, so **it makes that false too** — the guard could not tell
-"the picker is still up" from "a dialog is on top of an app that is already in front". The loop
-dismissed the launcher's ANR dialog (#93's occluder, still ambient) and then pressed back on the
-reading it had taken before doing so, into an app with nothing left to go back to.
+"the picker is still up" from "a dialog is on top of an app that is already in front".
+
+**And the first two lines are the part to read carefully, because the obvious reading is wrong.**
+The picker did not close on its own: `dismissASystemErrorDialog` closed it on iteration 2, by
+falling through to `android:id/button1` and clicking DocumentsUI's own positive button (#271). From
+`20:59:36.033` there was nothing to back out of — and the loop pressed back on iteration 2 anyway,
+then dismissed the launcher's ANR dialog on iteration 3 and pressed again on the reading taken
+before doing so. That press finished `MainActivity`. **So this mode and #271 are one incident**, and
+the fix stops it at iteration 2, where the re-read now returns.
 
 Fixed by re-reading the focus after a dialog is actually dismissed, and only then —
 `SafPickerRoundTripTest.dismissThePicker` carries the trace. That **removes** a press sent on a
